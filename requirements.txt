@@ -1,0 +1,30 @@
+# GrocerEase AI - Google ADK RemoteA2aAgent Migration
+# Main requirements file for the migrated implementation
+
+# Google ADK for AI agent functionality and A2A communication
+google-adk[a2a]>=1.0.0
+
+# Google Generative AI for Gemini integration
+google-generativeai>=0.8.0
+
+# HTTP server for agent endpoints (for Google ADK RemoteA2aAgent)
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Logging
+structlog>=23.2.0
+
+# HTTP client for A2A communication
+httpx>=0.25.0
+
+# Async support
+asyncio>=3.4.3
+
+# JSON handling and validation
+pydantic>=2.5.0
+
+# Additional utilities
+typing-extensions>=4.8.0

@@ -1,0 +1,12 @@
+# Google ADK for AI agent functionality and A2A communication
+google-adk[a2a]>=1.0.0
+
+# HTTP server for agent endpoints (for Google ADK RemoteA2aAgent)
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# HTTP client for A2A communication
+httpx>=0.25.0

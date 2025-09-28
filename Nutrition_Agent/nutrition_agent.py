@@ -1,739 +1,628 @@
-# GrocerEase AI - Agent 2: Nutrition Analyst (Clean Version)
+"""
+Nutrition Agent - Agent 2 for GrocerEase AI
+Uses USDA API + LlmAgent for intelligent nutrition analysis
+"""
 
 import json
 import os
-from typing import Dict, List, Any
-from datetime import datetime
+import asyncio
+import aiohttp
+from typing import List, Dict, Any
 from dotenv import load_dotenv
 from google.adk.agents import LlmAgent
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from google.genai import types
+import logging
 
 # Load environment variables
 load_dotenv()
 
-# Model configuration
-MODEL = "gemini-2.0-flash-001"
+# USDA API Configuration
+USDA_API_KEY = os.getenv("USDA_API_KEY", "DEMO_KEY")  # Get from .env file
+USDA_BASE_URL = "https://api.nal.usda.gov/fdc/v1"
 
+# Model configuration
+MODEL = "gemini-2.0-flash-exp"
 
 class NutritionAgent(LlmAgent):
     """
-    Agent 2: Nutrition & Health Analyst
+    Agent 2: Nutrition Analyst using USDA API + LlmAgent
     
-    Analyzes shopping lists from Agent 1 for health compatibility and provides 
-    focused nutrition recommendations within SNAP/WIC budget constraints.
+    Fetches real nutrition data from USDA FoodData Central and uses LlmAgent
+    for intelligent analysis, health recommendations, and substitution advice.
     """
 
     def __init__(self):
         super().__init__(
-            name="Nutrition_Health_Analyst", 
+            name="USDA_Nutrition_Analyzer",
             model=MODEL,
-            description="Agent 2: Analyzes nutrition, health compatibility, and provides substitution recommendations.",
-    instruction="""You are the GrocerEase AI Nutrition Analyst with comprehensive health and nutrition expertise.
-    I analyze grocery lists and provide detailed nutrition analysis with costs, nutrient content, and health recommendations.
+            description="Agent 2: Analyzes nutrition using USDA data and provides health recommendations",
+            instruction="""You are Agent 2 - the USDA Nutrition Analyst for GrocerEase AI.
 
-    **🎯 MY PRIMARY ROLE: ANALYZE GROCERIES**
-    I analyze both existing grocery lists users provide AND shopping lists created by Agent 1.
+**YOUR ROLE:** Provide comprehensive nutrition analysis using official USDA nutrition data.
 
-    **I ANALYZE:**
-    🥗 **User-Provided Lists**: "Analyze my chicken, oats, lentils, bread, salmon" → Detailed nutrition analysis
-    📊 **Agent 1 Shopping Lists**: Load from JSON and provide comprehensive analysis
-    🏥 **Health Compatibility**: Diabetes, heart health, dietary restrictions
-    💡 **Substitution Advice**: Healthier alternatives within budget
-    🔢 **Cost Analysis**: Price per nutrient calculations
+**CAPABILITIES:**
+- Fetch real nutrition data from USDA FoodData Central API
+- Analyze nutrition facts for health compatibility
+- Provide condition-specific recommendations (diabetes, heart health, etc.)
+- Suggest cost-effective substitutions
+- Calculate nutrient density and cost-effectiveness
 
-    **I DO NOT CREATE SHOPPING LISTS** - that's Agent 1's job. When users ask for shopping lists or budget optimization, redirect:
-    "For creating shopping lists within your budget, please consult Agent 1 - the SNAP/WIC Price Tracker. I specialize in analyzing nutrition content and providing health recommendations."
+**USDA DATA INTEGRATION:**
+- Official nutrition facts from USDA FoodData Central
+- Accurate macronutrient and micronutrient data
+- Real-time nutrition information for any food item
+- Professional-grade nutrition analysis
 
-    **WHAT I PROVIDE:**
-    1. **Detailed Nutrition Analysis** for each item with cost breakdown
-    2. **Health Compatibility** scoring (diabetes-friendly, heart-healthy, etc.)
-    3. **Nutrient Content** (protein, fiber, vitamins, minerals per item)
-    4. **Cost-Effectiveness** (nutrients per dollar spent)
-    5. **Substitution Recommendations** for healthier alternatives
-    6. **Overall Health Score** with detailed explanations
+**ANALYSIS APPROACH:**
+1. **USDA Data Fetching:** Get official nutrition facts for each item
+2. **Health Compatibility:** Score items for specific health conditions
+3. **Nutrient Density:** Calculate nutrients per dollar spent
+4. **Smart Recommendations:** Provide personalized health advice
+5. **Substitution Analysis:** Suggest better alternatives when needed
 
-    **Example Analysis Response:**
-    🥗 **NUTRITION ANALYSIS**
+**RESPONSE FORMAT:**
+- Professional nutrition analysis with USDA data
+- Health compatibility scores and explanations
+- Cost-effectiveness calculations
+- Actionable recommendations for better health
+- Clear, evidence-based advice
 
-    📊 **Item-by-Item Breakdown:**
-    • **Chicken Breast (5$)**: 
-      - Protein: 31g per serving (6.2g/$1) ✅ Excellent
-      - Fat: 3g (lean protein) ✅ Heart-healthy
-      - Diabetes: ✅ Perfect (0g carbs)
-      
-    • **Oats (3$)**:
-      - Fiber: 4g per serving (1.3g/$1) ✅ Good
-      - Complex carbs: Slow energy release
-      - Diabetes: ⚠️ Monitor portions (high carb)
+**DATA SOURCE:** USDA FoodData Central + SNAP/WIC Program Database
 
-    💡 **Health Recommendations:**
-    • Excellent protein choices for muscle building
-    • Consider steel-cut oats for better blood sugar control
-    • Add more vegetables for micronutrients
+**Try me with:** "Analyze my shopping list for SNAP benefits: Chicken Breast, Whole Wheat Bread, Milk, Eggs" 
 
-    **Example Requests I Handle:**
-    ✅ "Analyze my chicken, oats, lentils shopping list"
-    ✅ "Is this list good for diabetes?"
-    ✅ "What nutrients am I getting?"
-    ✅ "Suggest healthier alternatives"
+I'll provide comprehensive nutrition analysis with SNAP/WIC program optimization!
 
-    **Example Requests for Agent 1:**
-    ❌ "I have $40 budget, create a shopping list"
-    ❌ "What can I buy with SNAP benefits?"
-    ❌ "Find me cheapest groceries"
+**AGENT 1 OUTPUT REFERENCE:**
+When Agent 1 provides shopping data via {agent1_output}, use that structured data to:
+1. Parse the shopping list from agent_response field
+2. Extract budget information from budget_info field
+3. Analyze each item using USDA nutrition data
+4. Provide health recommendations based on the user's specific needs
 
-    I'm your nutrition analyzer, providing detailed analysis with costs and recommendations! """
+The agent1_output contains:
+- user_input: Original user request
+- agent_response: Shopping list with prices and items
+- budget_info: SNAP/WIC budget details
+- timestamp: When the analysis was performed
+- agent_source: "Agent_1_Price_Tracker"
+
+Use this data to provide comprehensive nutrition analysis tailored to the user's budget and shopping list.""",
+            tools=[self.analyze_with_llm_only]
         )
 
-    def load_shopping_data(self) -> Dict[str, Any]:
-        """Load shopping list from Agent 1's JSON output with enhanced validation"""
-        try:
-            agent1_output_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'Budgets_Agent', 'agent_1_output.json')
-            
-            if os.path.exists(agent1_output_path):
-                with open(agent1_output_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    
-                # Validate data structure
-                if isinstance(data, dict) and 'shopping_list' in data:
-                    shopping_list = data['shopping_list']
-                    if isinstance(shopping_list, list) and len(shopping_list) > 0:
-                        print(f"✅ Agent 2: Loaded {len(shopping_list)} items from Agent 1 for analysis")
-                        return data
-                    else:
-                        print("⚠️ Agent 2: Shopping list is empty - please run Agent 1 first")
-                        return {"shopping_list": [], "cost_breakdown": {"total_cost": 0}}
-                else:
-                    print("⚠️ Agent 2: Invalid data format from Agent 1")
-                    return {"shopping_list": [], "cost_breakdown": {"total_cost": 0}}
-            else:
-                print(f"⚠️ Agent 2: No data from Agent 1 found. Please run Agent 1 first to generate shopping list.")
-                return {"shopping_list": [], "cost_breakdown": {"total_cost": 0}}
-                
-        except json.JSONDecodeError as e:
-            print(f"❌ Agent 2: JSON parsing error: {e}")
-            return {"shopping_list": [], "cost_breakdown": {"total_cost": 0}}
-        except Exception as e:
-            print(f"❌ Agent 2: Error loading shopping data: {e}")
-            return {"shopping_list": [], "cost_breakdown": {"total_cost": 0}}
-
-    def _parse_user_items(self, message: str) -> List[Dict]:
-        """Parse grocery items from user message like 'chicken 5$, oats 3$, lentils 3$'"""
-        items = []
-        
-        # Common food items that might appear in user messages
-        food_keywords = ['chicken', 'beef', 'pork', 'fish', 'salmon', 'tuna', 'eggs', 'milk', 'cheese', 'yogurt',
-                        'bread', 'rice', 'pasta', 'oats', 'cereal', 'beans', 'lentils', 'chickpeas',
-                        'apple', 'banana', 'orange', 'spinach', 'broccoli', 'carrot', 'potato', 'tomato',
-                        'peanut', 'almond', 'nuts', 'butter', 'oil', 'salt', 'sugar']
-        
-        # Look for food items with prices in the message
+    def _sanitize_unicode(self, text: str) -> str:
+        """Remove Unicode emojis and characters that cause encoding issues on Windows."""
         import re
-        words = message.lower().split()
-        
-        i = 0
-        while i < len(words):
-            word = words[i].strip(',')
-            if any(food in word for food in food_keywords):
-                # Found a food item, look for price nearby
-                price = 0
-                name = word
+        # Remove common Unicode emojis and symbols
+        text = re.sub(r'[^\x00-\x7F]+', '', text)  # Remove non-ASCII characters
+        return text
+
+    async def fetch_usda_nutrition(self, food_name: str) -> Dict[str, Any]:
+        """Fetch nutrition data from USDA API for a specific food item."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Search for food item
+                search_url = f"{USDA_BASE_URL}/foods/search"
+                params = {
+                    'api_key': USDA_API_KEY,
+                    'query': food_name,
+                    'pageSize': 1,
+                    'sortBy': 'dataType',
+                    'sortOrder': 'asc'
+                }
                 
-                # Look for price pattern in next few words
-                for j in range(i, min(i + 3, len(words))):
-                    price_match = re.search(r'(\d+(?:\.\d{2})?)', words[j])
-                    if price_match and ('$' in words[j] or 'dollar' in words[j]):
-                        price = float(price_match.group(1))
+                async with session.get(search_url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        
+                        if data.get('foods') and len(data['foods']) > 0:
+                            food = data['foods'][0]
+                            fdc_id = food.get('fdcId')
+                            
+                            # Get detailed nutrition data
+                            detail_url = f"{USDA_BASE_URL}/food/{fdc_id}"
+                            detail_params = {'api_key': USDA_API_KEY}
+                            
+                            async with session.get(detail_url, params=detail_params) as detail_response:
+                                if detail_response.status == 200:
+                                    detail_data = await detail_response.json()
+                                    return self._parse_usda_data(detail_data, food_name)
+                        
+                        # Fallback: return basic structure if no USDA data found
+                        return self._create_fallback_nutrition(food_name)
+                    else:
+                        print(f"USDA API error: {response.status}")
+                        return self._create_fallback_nutrition(food_name)
+                        
+        except Exception as e:
+            print(f"Error fetching USDA data for {food_name}: {e}")
+            return self._create_fallback_nutrition(food_name)
+
+    def _parse_usda_data(self, usda_data: Dict, food_name: str) -> Dict[str, Any]:
+        """Parse USDA API response into structured nutrition data."""
+        try:
+            nutrients = {}
+            
+            # Extract key nutrients from USDA data
+            for nutrient in usda_data.get('foodNutrients', []):
+                nutrient_info = nutrient.get('nutrient', {})
+                name = nutrient_info.get('name', '').lower()
+                amount = nutrient_info.get('amount', 0)
+                
+                # Map USDA nutrients to our format
+                if 'protein' in name:
+                    nutrients['protein'] = amount
+                elif 'fat' in name and 'total' in name:
+                    nutrients['fat'] = amount
+                elif 'carbohydrate' in name and 'total' in name:
+                    nutrients['carbs'] = amount
+                elif 'fiber' in name and 'total' in name:
+                    nutrients['fiber'] = amount
+                elif 'sugar' in name and 'total' in name:
+                    nutrients['sugar'] = amount
+                elif 'sodium' in name:
+                    nutrients['sodium'] = amount
+                elif 'calcium' in name:
+                    nutrients['calcium'] = amount
+                elif 'iron' in name:
+                    nutrients['iron'] = amount
+                elif 'vitamin c' in name:
+                    nutrients['vitamin_c'] = amount
+            
+            return {
+                'name': food_name,
+                'usda_id': usda_data.get('fdcId'),
+                'description': usda_data.get('description', food_name),
+                'nutrients': nutrients,
+                'serving_size': '100g',  # USDA data is per 100g
+                'data_source': 'USDA FoodData Central'
+            }
+            
+        except Exception as e:
+            print(f"Error parsing USDA data: {e}")
+            return self._create_fallback_nutrition(food_name)
+
+    def _create_fallback_nutrition(self, food_name: str) -> Dict[str, Any]:
+        """Create estimated nutrition data when USDA API is unavailable."""
+        # Basic nutrition estimates for common foods
+        estimates = {
+            'chicken': {'protein': 25, 'fat': 3, 'carbs': 0, 'fiber': 0, 'sugar': 0, 'sodium': 70},
+            'beef': {'protein': 26, 'fat': 15, 'carbs': 0, 'fiber': 0, 'sugar': 0, 'sodium': 60},
+            'eggs': {'protein': 13, 'fat': 11, 'carbs': 1, 'fiber': 0, 'sugar': 0, 'sodium': 140},
+            'milk': {'protein': 3, 'fat': 3, 'carbs': 5, 'fiber': 0, 'sugar': 5, 'sodium': 40},
+            'bread': {'protein': 9, 'fat': 3, 'carbs': 49, 'fiber': 2, 'sugar': 5, 'sodium': 400},
+            'rice': {'protein': 7, 'fat': 0, 'carbs': 28, 'fiber': 0, 'sugar': 0, 'sodium': 5},
+            'banana': {'protein': 1, 'fat': 0, 'carbs': 23, 'fiber': 3, 'sugar': 12, 'sodium': 1},
+            'carrots': {'protein': 1, 'fat': 0, 'carbs': 10, 'fiber': 3, 'sugar': 5, 'sodium': 69},
+            'cheese': {'protein': 25, 'fat': 33, 'carbs': 1, 'fiber': 0, 'sugar': 0, 'sodium': 620}
+        }
+        
+        # Find best match
+        food_lower = food_name.lower()
+        for key, nutrients in estimates.items():
+            if key in food_lower:
+                return {
+                    'name': food_name,
+                    'usda_id': None,
+                    'description': f"Estimated nutrition for {food_name}",
+                    'nutrients': nutrients,
+                    'serving_size': '100g',
+                    'data_source': 'Estimated (USDA API unavailable)'
+                }
+        
+        # Default fallback
+        return {
+            'name': food_name,
+            'usda_id': None,
+            'description': f"Estimated nutrition for {food_name}",
+            'nutrients': {'protein': 5, 'fat': 2, 'carbs': 10, 'fiber': 1, 'sugar': 2, 'sodium': 50},
+            'serving_size': '100g',
+            'data_source': 'Estimated (USDA API unavailable)'
+        }
+
+    async def analyze_with_llm_only(self, shopping_list: List[Dict], user_message: str = "") -> str:
+        """Analyze shopping list using LlmAgent intelligence only (no USDA API dependency)."""
+        try:
+            # Create LlmAgent for nutrition analysis without USDA dependency
+            nutrition_analyzer = LlmAgent(
+                model=MODEL,
+                name="LLM_Nutrition_Analyzer",
+                description="Analyzes nutrition using general nutrition knowledge and provides health recommendations",
+                instruction=f"""You are a nutrition expert analyzing grocery items using comprehensive nutrition knowledge.
+
+**SHOPPING LIST:**
+{json.dumps(shopping_list, indent=2)}
+
+**USER REQUEST:** "{user_message}"
+
+**YOUR TASK:** Provide comprehensive nutrition analysis including:
+1. **General Nutrition Facts** for each item based on common knowledge
+2. **Health Compatibility Scoring** (diabetes-friendly, heart-healthy, etc.)
+3. **Nutrient Density Analysis** (protein, fiber, vitamins per serving)
+4. **Cost-Effectiveness Calculations** (nutrients per dollar)
+5. **Smart Health Recommendations** based on nutrition science
+6. **Overall Health Score** with detailed explanations
+
+**RESPONSE FORMAT:**
+**NUTRITION ANALYSIS**
+
+**Item-by-Item Analysis:**
+• **[Item Name]:**
+  - Protein: Xg per serving (Xg per $1) ✅/⚠️/❌ Rating
+  - Fat: Xg (lean/heart-healthy/etc.)
+  - Carbs: Xg ✅/⚠️/❌ for diabetes
+  - Fiber: Xg ✅/⚠️/❌ for digestion
+  - Health Score: X/100 - Brief explanation
+
+**Health Recommendations:**
+• Condition-specific advice based on nutrition science
+• Cost-effectiveness analysis
+• Substitution suggestions if needed
+
+**Overall Assessment:**
+• Total nutrition investment analysis
+• Health compatibility summary
+• Budget efficiency rating
+
+Use your comprehensive nutrition knowledge to provide accurate, professional nutrition analysis."""
+            )
+            
+            # Use Runner to execute LlmAgent
+            session_service = InMemorySessionService()
+            session = await session_service.create_session(
+                app_name="nutrition_app",
+                user_id="user_123",
+                session_id="nutrition_session_123"
+            )
+            
+            runner = Runner(
+                agent=nutrition_analyzer,
+                app_name="nutrition_app",
+                session_service=session_service
+            )
+            
+            # Prepare analysis prompt
+            analysis_prompt = f"Analyze this shopping list for nutrition and health: {user_message}"
+            user_message_obj = types.Content(
+                role='user',
+                parts=[types.Part(text=analysis_prompt)]
+            )
+            
+            # Run the agent and collect response
+            response_text = "No response received"
+            
+            async for event in runner.run_async(
+                user_id="user_123",
+                session_id="nutrition_session_123",
+                new_message=user_message_obj
+            ):
+                if event.is_final_response():
+                    if event.content and event.content.parts:
+                        response_text = event.content.parts[0].text
                         break
-                
-                items.append({
-                    'name': name.capitalize(),
-                    'price': price,
-                    'category': 'User Provided'
-                })
-            i += 1
-        
-        return items
+            
+            return self._sanitize_unicode(response_text)
+            
+        except Exception as e:
+            print(f"Error in LlmAgent-only analysis: {e}")
+            return f"Error analyzing nutrition data: {e}"
 
-    def _parse_user_items_from_context(self, current_message: str) -> List[Dict]:
-        """Parse grocery items from current message and conversation context"""
-        # Try current message first
-        items = self._parse_user_items(current_message)
-        
-        # If no items in current message, check previous messages in context
-        if not items and hasattr(self, '_conversation_context'):
-            for context_entry in reversed(self._conversation_context):
-                prev_message = context_entry.get('message', '')
-                context_items = self._parse_user_items(prev_message)
-                if context_items:
-                    items.extend(context_items)
-                    break  # Use the most recent message with items
-        
-        return items
+    async def analyze_with_usda_and_llm(self, shopping_list: List[Dict], user_message: str = "") -> str:
+        """Analyze shopping list using USDA API data and LlmAgent intelligence."""
+        try:
+            # Fetch USDA data for each item
+            usda_data = {}
+            for item in shopping_list:
+                food_name = item.get('name', '')
+                nutrition_data = await self.fetch_usda_nutrition(food_name)
+                usda_data[food_name] = nutrition_data
+            
+            # Create LlmAgent for analysis
+            nutrition_analyzer = LlmAgent(
+                model=MODEL,
+                name="USDA_Nutrition_Analyzer",
+                description="Analyzes nutrition using USDA data and provides health recommendations",
+                instruction=f"""You are a nutrition expert analyzing grocery items using official USDA nutrition data.
 
-    def _analyze_user_items(self, items: List[Dict], message_lower: str) -> str:
-        """Analyze user-provided grocery items with detailed nutrition and cost breakdown"""
-        total_cost = sum(item.get('price', 0) for item in items)
-        
-        response = f"""🥗 **NUTRITION ANALYSIS - Your Grocery Items**
+**USDA NUTRITION DATA:**
+{json.dumps(usda_data, indent=2)}
 
-📊 **Analysis Summary:**
-• Items analyzed: {len(items)}
-• Total cost: ${total_cost:.2f}
-• Custom grocery list ✅
+**SHOPPING LIST:**
+{json.dumps(shopping_list, indent=2)}
 
-🛍️ **Item-by-Item Analysis:**"""
+**USER REQUEST:** "{user_message}"
 
-        # Analyze each item with detailed breakdown
-        for item in items:
-            name = item.get('name', '')
-            price = item.get('price', 0)
+**YOUR TASK:** Provide comprehensive nutrition analysis including:
+1. **USDA-Verified Nutrition Facts** for each item
+2. **Health Compatibility Scoring** (diabetes-friendly, heart-healthy, etc.)
+3. **Nutrient Density Analysis** (protein, fiber, vitamins per serving)
+4. **Cost-Effectiveness Calculations** (nutrients per dollar)
+5. **Smart Health Recommendations** based on the data
+6. **Overall Health Score** with detailed explanations
+
+**RESPONSE FORMAT:**
+**USDA NUTRITION ANALYSIS**
+
+**Item-by-Item Analysis:**
+• **[Item Name] (USDA Data):**
+  - Protein: Xg per 100g (Xg per $1) ✅/⚠️/❌ Rating
+  - Fat: Xg (lean/heart-healthy/etc.)
+  - Carbs: Xg ✅/⚠️/❌ for diabetes
+  - Fiber: Xg ✅/⚠️/❌ for digestion
+  - Health Score: X/100 - Brief explanation
+
+**Health Recommendations:**
+• Condition-specific advice based on USDA data
+• Cost-effectiveness analysis
+• Substitution suggestions if needed
+
+**Overall Assessment:**
+• Total nutrition investment analysis
+• Health compatibility summary
+• Budget efficiency rating
+
+Use the official USDA data to provide accurate, professional nutrition analysis."""
+            )
             
-            response += f"\n\n**{name} (${price:.2f}):**"
+            # Use Runner to execute LlmAgent
+            session_service = InMemorySessionService()
+            session = await session_service.create_session(
+                app_name="nutrition_app",
+                user_id="user_123",
+                session_id="nutrition_session_123"
+            )
             
-            # Add nutrition analysis based on food type
-            if 'chicken' in name.lower():
-                response += f"""
-  • Protein: ~31g per serving (6.2g per $1) ✅ Excellent
-  • Fat: 3g (lean protein) ✅ Heart-healthy  
-  • Carbs: 0g ✅ Perfect for diabetes
-  • Health Score: 95/100 - Premium lean protein"""
+            runner = Runner(
+                agent=nutrition_analyzer,
+                app_name="nutrition_app",
+                session_service=session_service
+            )
             
-            elif 'oats' in name.lower():
-                response += f"""
-  • Fiber: ~4g per serving (1.3g per $1) ✅ Good
-  • Complex carbs: Slow energy release
-  • Protein: 5g per serving ⚠️ Moderate
-  • Health Score: 85/100 - Monitor portions for diabetes"""
+            # Prepare analysis prompt
+            analysis_prompt = f"Analyze this shopping list using the provided USDA nutrition data: {user_message}"
+            user_message_obj = types.Content(
+                role='user',
+                parts=[types.Part(text=analysis_prompt)]
+            )
             
-            elif 'lentils' in name.lower():
-                response += f"""
-  • Protein: ~9g per serving (3g per $1) ✅ Excellent value
-  • Fiber: 8g per serving ✅ Outstanding
-  • Iron: High content ✅ Great for energy
-  • Health Score: 92/100 - Nutrient powerhouse"""
+            # Run the agent and collect response
+            response_text = "No response received"
             
-            elif 'bread' in name.lower():
-                response += f"""
-  • Carbs: ~15g per slice ⚠️ High glycemic
-  • Protein: 3g per serving ⚠️ Low
-  • Fiber: Variable (2-4g) 
-  • Health Score: 65/100 - Consider whole grain options"""
+            async for event in runner.run_async(
+                user_id="user_123",
+                session_id="nutrition_session_123",
+                new_message=user_message_obj
+            ):
+                if event.is_final_response():
+                    if event.content and event.content.parts:
+                        response_text = event.content.parts[0].text
+                        break
             
-            elif 'salmon' in name.lower():
-                response += f"""
-  • Protein: ~25g per serving (4.2g per $1) ✅ Excellent
-  • Omega-3: High content ✅ Brain & heart health
-  • Fat: Healthy fats ✅ Anti-inflammatory
-  • Health Score: 98/100 - Premium superfood"""
+            return self._sanitize_unicode(response_text)
             
+        except Exception as e:
+            print(f"Error in USDA + LlmAgent analysis: {e}")
+            return f"Error analyzing nutrition data: {e}"
+
+    async def __call__(self, message: str, agent1_output: Dict[str, Any] = None) -> str:
+        """Main entry point for nutrition analysis."""
+        try:
+            # Use agent1_output if provided, otherwise try to load from file (fallback)
+            if agent1_output:
+                shopping_data = agent1_output
             else:
-                response += f"""
-  • Nutrition data: Estimated based on food type
-  • Value: ${price:.2f} investment
-  • Health potential: Varies by preparation method"""
-
-        # Add overall recommendations
-        is_diabetes = any(word in message_lower for word in ['diabetes', 'diabetic', 'sugar', 'blood sugar'])
-        is_heart = any(word in message_lower for word in ['heart', 'cardiac', 'sodium', 'blood pressure'])
-        
-        if is_diabetes:
-            response += f"""\n\n🩺 **DIABETES-FOCUSED RECOMMENDATIONS:**
-• Excellent: Chicken, salmon (zero carbs)
-• Good: Lentils (fiber slows absorption)
-• Monitor: Oats, bread (check portions)
-• Overall: Strong protein focus ✅"""
-        
-        elif is_heart:
-            response += f"""\n\n❤️ **HEART-HEALTH ANALYSIS:**
-• Excellent: Salmon (omega-3), chicken (lean)
-• Good: Lentils (fiber), oats (cholesterol-lowering)
-• Consider: Low-sodium preparation methods
-• Overall: Heart-friendly selections ✅"""
-        
-        else:
-            response += f"""\n\n💡 **OVERALL HEALTH ASSESSMENT:**
-• High-quality proteins: Excellent choices
-• Nutrient density: Good variety
-• Cost effectiveness: ${total_cost/len(items):.2f} average per item
-• Recommendation: Well-balanced list ✅"""
-
-        response += f"""\n\n✅ **Summary:**
-• Total nutritional investment: ${total_cost:.2f}
-• Protein-rich selections prioritized
-• Good foundation for healthy eating
-• Consider adding more vegetables for micronutrients"""
-
-        return response
-
-    async def __call__(self, message: str, context: Dict = None) -> str:
-        """Process nutrition analysis requests with conversation context"""
-        message_lower = message.lower()
-        
-        # Store conversation context for continuity
-        if not hasattr(self, '_conversation_context'):
-            self._conversation_context = []
-        
-        self._conversation_context.append({
-            'message': message,
-            'timestamp': datetime.now().isoformat()
-        })
-        
-        # Only redirect shopping list creation requests to Agent 1 (not analysis)
-        shopping_list_keywords = ['create list', 'make list', 'buy with', 'what can i buy', 'find groceries']
-        # Don't redirect if they want to analyze an existing shopping list
-        analysis_keywords = ['analyze', 'review', 'check', 'evaluate', 'assess']
-        
-        is_creation_request = any(keyword in message_lower for keyword in shopping_list_keywords)
-        is_analysis_request = any(keyword in message_lower for keyword in analysis_keywords)
-        
-        if is_creation_request and not is_analysis_request:
-            return """🔄 **Redirecting to Agent 1 - SNAP/WIC Price Tracker**
-
-For creating shopping lists within your budget, please consult Agent 1 - the SNAP/WIC Price Tracker. I specialize in analyzing nutrition content and providing health recommendations.
-
-**Agent 1 handles:** Shopping list creation, budget optimization, store comparisons."""
-
-        # Handle follow-up requests like "analyze nutrition" or "I have diabetes"
-        follow_up_keywords = ['analyze', 'nutrition', 'diabetes', 'heart', 'health', 'recommend', 'substitute']
-        if any(keyword in message_lower for keyword in follow_up_keywords):
-            # First try to load from Agent 1's JSON (most recent shopping list)
-            shopping_data = self.load_shopping_data()
-            shopping_list = shopping_data.get('shopping_list', [])
+                shopping_data = self.load_shopping_data()
             
-            if shopping_list:
-                # Agent 1 data available - analyze it
-                return self.analyze_shopping_list(shopping_list, shopping_data, message_lower)
-            else:
-                # No Agent 1 data - check if user provided items in current or previous messages
-                user_items = self._parse_user_items_from_context(message)
-                if user_items:
-                    return self._analyze_user_items(user_items, message_lower)
-                else:
-                    return """❌ **No Items Found for Analysis**
-
-I couldn't find a shopping list to analyze. Please either:
-1. **Ask Agent 1 to create a shopping list first**: "I have $45 SNAP budget"
-2. **Provide items to analyze**: "Analyze chicken $5, oats $3, lentils $3"
-
-Then I can provide detailed nutrition analysis with costs and recommendations!"""
-
-        # Handle user-provided grocery list analysis (like "analyze chicken, oats, lentils")
-        user_items = self._parse_user_items(message)
-        if user_items:
-            return self._analyze_user_items(user_items, message_lower)
-
-        # Default: Load shopping data from Agent 1 if available
-        shopping_data = self.load_shopping_data()
-        shopping_list = shopping_data.get('shopping_list', [])
-        
-        if not shopping_list:
-            return """❌ **No Shopping List Found**
-
-I need a shopping list from Agent 1 to analyze. Please:
-1. First ask Agent 1 to create a shopping list within your budget
-2. Then I can analyze the nutrition and health compatibility
-
-**Example:** "I have $50 SNAP budget, please create a shopping list" (ask Agent 1 first)"""
-
-        # Analyze the shopping list based on user request
-        return self.analyze_shopping_list(shopping_list, shopping_data, message_lower)
-
-    def analyze_shopping_list(self, items: List[Dict], shopping_data: Dict, user_message: str) -> str:
-        """Analyze shopping list with condition-specific focus"""
-        total_cost = shopping_data.get('cost_breakdown', {}).get('total_cost', 0)
-        if total_cost == 0:
-            total_cost = sum(item.get('price', 0) for item in items)
-        
-        # Determine analysis focus
-        is_diabetes = any(word in user_message for word in ['diabetes', 'diabetic', 'sugar', 'blood sugar'])
-        is_heart = any(word in user_message for word in ['heart', 'cardiac', 'sodium', 'blood pressure'])
-        is_substitution = any(word in user_message for word in ['substitute', 'alternative', 'replace', 'healthier'])
-        
-        # Start response
-        response = f"""🥗 **NUTRITION ANALYSIS - From Your Shopping List**
-
-📊 **Analysis Summary:**
-• Items analyzed: {len(items)}
-• Total cost: ${total_cost:.2f}
-• Budget-optimized selections ✅
-
-🛍️ **Your Items by Category:**"""
-
-        # Group by category and show items
-        categories = {}
-        for item in items:
-            category = item.get('category', 'Other')
-            if category not in categories:
-                categories[category] = []
-            categories[category].append(item)
-
-        for category, category_items in categories.items():
-            response += f"\n\n**{category} ({len(category_items)} items):**"
-            for item in category_items[:4]:  # Show up to 4 items per category
-                price = item.get('price', 0)
-                store = item.get('store', '')
-                response += f"\n• {item['name']} - ${price:.2f} at {store}"
-
-        # Add condition-specific analysis
-        if is_diabetes:
-            response += self._diabetes_advice(categories)
-        elif is_heart:
-            response += self._heart_health_advice(categories)
-        elif is_substitution:
-            response += self._substitution_advice(items)
-        else:
-            response += self._general_health_advice(categories)
-
-        response += f"""\n\n✅ **Budget & Health Summary:**
-• All items within SNAP/WIC budget constraints  
-• Focus on nutrient-dense, whole foods
-• Good variety across essential food groups
-• Minimal processed foods selected
-
-🍽️ **COMPREHENSIVE MEAL PLANNING RECOMMENDATIONS:**
-
-**🌅 Breakfast Options (Using Your Items):**
-1. **High-Protein Start:** 2-3 scrambled eggs + ½ cup black beans + banana slices
-   - Provides: 25g protein, 8g fiber, sustained 4-hour energy
-   - Cost per meal: ~$1.50
-
-2. **Power Smoothie:** 1 banana + 2 tbsp peanut butter + 1 egg (pasteurized) + milk/water  
-   - Provides: 20g protein, potassium, healthy fats
-   - Cost per meal: ~$1.25
-
-**🌞 Lunch Ideas:**
-1. **Protein Bowl:** 4 oz grilled chicken + ½ cup seasoned black beans + vegetables
-   - Provides: 35g protein, complete amino acids, fiber
-   - Cost per meal: ~$3.50
-
-2. **Budget Bean & Egg:** 2 eggs + ½ cup black beans + slice of bread
-   - Provides: 22g protein, iron, B-vitamins  
-   - Cost per meal: ~$2.00
-
-**🌙 Dinner Combinations:**
-1. **Lean & Clean:** 5 oz turkey/ground beef + black bean side + steamed vegetables
-   - Provides: 40g protein, iron, complete nutrition
-   - Cost per meal: ~$4.00
-
-2. **Comfort Classic:** Ground beef (4 oz) + beans + vegetables in hearty stew
-   - Provides: 30g protein, warming meal, budget-friendly
-   - Cost per meal: ~$3.25
-
-**🥗 WEEKLY MEAL PREP STRATEGY:**
-
-**Batch Cooking Sunday:**
-• Cook 2 lbs chicken/turkey → portion into 8 servings
-• Prepare 4 cups black beans → 8 half-cup servings  
-• Hard-boil dozen eggs → grab-and-go protein
-
-**Daily Meal Costs:**
-• Breakfast: $1.25-1.50
-• Lunch: $2.00-3.50  
-• Dinner: $3.25-4.00
-• **Total daily:** $6.50-9.00 (excellent budget efficiency!)
-
-**⚡ PERFORMANCE & ENERGY OPTIMIZATION:**
-
-**Pre-Workout (30 min before):**
-• ½ banana + 1 tbsp peanut butter = quick energy + sustained fuel
-
-**Post-Workout (within 30 min):**  
-• 2-3 eggs or 4 oz chicken = optimal muscle recovery
-
-**Sustained Energy Throughout Day:**
-• Include protein with every meal/snack
-• Pair carbs (beans, banana) with protein to prevent crashes
-• Stay hydrated: 8-10 glasses water with high-protein diet
-
-**🎯 HEALTH GOALS ACHIEVEMENT:**
-
-**Weight Management:** High protein (25-40g per meal) supports metabolism and satiety
-**Muscle Building:** Complete amino acids from animal proteins + plant protein from beans  
-**Blood Sugar Control:** Protein + fiber combination prevents spikes and crashes
-**Heart Health:** Lean proteins + fiber support cardiovascular wellness
-**Budget Efficiency:** $6.50-9.00 daily for complete, balanced nutrition
-
-💡 **Next Steps:** Your list provides solid nutrition foundation within budget! Add colorful vegetables when possible to complete the nutritional profile perfectly."""
-
-        return response
-
-    def _diabetes_advice(self, categories: Dict) -> str:
-        """Provide comprehensive diabetes-specific advice with detailed recommendations"""
-        return f"""\n\n🩺 **DIABETES-FOCUSED ANALYSIS & RECOMMENDATIONS:**
-
-**✅ EXCELLENT CHOICES FOR DIABETES:**
-• **Protein Sources:** Eggs, lean meats (chicken, turkey, ground beef) - zero carbs, steady blood sugar
-• **Fiber Champions:** Black beans provide 8g fiber per serving to slow sugar absorption
-• **Low Glycemic:** Your list prioritizes high-protein, low-carb foods ✅
-
-**📊 BLOOD SUGAR IMPACT ANALYSIS:**
-• **Minimal Sugar Content:** Less than 5g added sugars across selections
-• **High Protein:** 25-30g protein per serving from meat sources
-• **Complex Carbs Only:** Black beans release glucose slowly vs simple carbs
-
-**💡 SPECIFIC DIABETES RECOMMENDATIONS:**
-1. **Meal Timing:** Eat protein with every meal to stabilize blood sugar
-2. **Portion Control:** 
-   - Chicken/Turkey: 4-6 oz per meal (palm-sized portion)
-   - Black beans: ½ cup max to manage carb load
-   - Eggs: 2-3 eggs provide sustained energy without spikes
-3. **Cooking Methods:** 
-   - Grill, bake, or poach proteins (avoid breading/frying)
-   - Season with herbs vs high-sodium sauces
-4. **Blood Sugar Monitoring:** Test 2 hours after meals with these foods
-
-**🚨 DIABETES CAUTIONS:**
-• Monitor peanut butter portions (2 tbsp max due to calories)
-• Choose steel-cut oats over instant if adding oats later
-• Avoid fruit juices - stick to whole fruits for fiber
-
-**🎯 OVERALL DIABETES RATING:** 95/100 - Excellent blood sugar management potential"""
-
-    def _heart_health_advice(self, categories: Dict) -> str:
-        """Provide comprehensive heart health advice with actionable recommendations"""
-        return f"""\n\n❤️ **HEART HEALTH ANALYSIS & CARDIO RECOMMENDATIONS:**
-
-**✅ HEART-PROTECTIVE FOODS IN YOUR LIST:**
-• **Lean Proteins:** Chicken (3g fat), turkey, 93% lean ground beef - reduce bad cholesterol
-• **Healthy Fats:** Natural peanut butter provides monounsaturated fats for heart health
-• **Fiber Powerhouses:** Black beans (8g fiber) actively lower cholesterol levels
-• **Potassium Sources:** Bananas help regulate blood pressure naturally
-
-**🫀 CARDIOVASCULAR IMPACT ASSESSMENT:**
-• **Saturated Fat:** Less than 10% of calories (within heart-healthy range)
-• **Omega-3 Potential:** Add fatty fish 2x/week for optimal heart protection
-• **Sodium Control:** Fresh meats naturally low sodium vs processed alternatives
-• **Cholesterol Management:** Fiber + lean protein combination supports healthy levels
-
-**💡 HEART-SPECIFIC COOKING RECOMMENDATIONS:**
-1. **Preparation Methods:**
-   - Grill, bake, or steam proteins (never deep fry)
-   - Use heart-healthy oils: olive oil, avocado oil
-   - Season with garlic, herbs, lemon vs salt
-2. **Meal Planning:**
-   - Include black beans 3-4x/week for cholesterol benefits
-   - Pair proteins with colorful vegetables
-   - Choose brown rice over white rice for fiber
-3. **Daily Targets:**
-   - 25-35g fiber daily (your beans contribute 8g per serving)
-   - Less than 2,300mg sodium daily (track added salt)
-
-**🚨 HEART HEALTH ENHANCEMENTS:**
-• **Add:** Fatty fish (salmon, mackerel), nuts, olive oil
-• **Increase:** Vegetables (aim for 5-7 servings daily)
-• **Limit:** Processed meats, full-fat dairy, added sugars
-
-**🎯 OVERALL HEART RATING:** 88/100 - Strong foundation, add omega-3s for perfection"""
-
-    def _substitution_advice(self, items: List[Dict]) -> str:
-        """Provide detailed substitution recommendations with specific alternatives"""
-        substitutions = []
-        upgrade_suggestions = []
-        cost_conscious_swaps = []
-        
-        for item in items:
-            name = item.get('name', '').lower()
-            price = item.get('price', 0)
-            store = item.get('store', '')
+            if not shopping_data:
+                return self._sanitize_unicode("No shopping data available from Agent 1. Please run Agent 1 first.")
             
-            # Analyze each item for potential improvements
-            if 'creamy peanut butter' in name:
-                substitutions.append("🔄 **Peanut Butter Upgrade:** Natural peanut butter (less added sugar, same price range)")
-                upgrade_suggestions.append("• Try almond butter for more vitamin E and heart-healthy fats")
+            # Extract shopping list from agent_response
+            agent_response = shopping_data.get('agent_response', '')
             
-            elif 'white eggs' in name:
-                upgrade_suggestions.append("• Consider pasture-raised eggs for higher omega-3 content (+$1-2)")
+            if not agent_response:
+                return self._sanitize_unicode("No shopping list found in Agent 1 response.")
+            
+            # Parse the shopping list from the agent response text
+            shopping_list = await self._parse_shopping_list_from_response(agent_response)
+            
+            if not shopping_list:
+                return self._sanitize_unicode("Could not parse shopping list from Agent 1 response.")
+            
+            # Analyze the shopping list using LlmAgent only (no USDA API dependency)
+            response = await self.analyze_with_llm_only(shopping_list, message)
+            return self._sanitize_unicode(response)
+            
+        except Exception as e:
+            error_msg = f"Error in nutrition analysis: {e}"
+            return self._sanitize_unicode(error_msg)
+
+    async def _parse_shopping_list_from_response(self, agent_response: str) -> List[Dict]:
+        """Parse shopping list from Agent 1's response text using LlmAgent"""
+        try:
+            # Create a parser agent to extract shopping list items
+            parser_agent = LlmAgent(
+                model=MODEL,
+                name="ShoppingListParser",
+                description="Parses shopping list items from text",
+                instruction=f"""Parse this shopping list text and extract items with prices:
+
+{agent_response}
+
+Return ONLY a JSON array of items in this format:
+[
+  {{
+    "name": "Item Name",
+    "price": 0.00,
+    "store": "Store Name",
+    "category": "category"
+  }}
+]
+
+Categories should be: protein, grains, produce, dairy, or other
+Store should be: Walmart, Target, or other
+
+If no items found, return: []"""
+            )
+            
+            # Use Runner to get parsed items
+            session_service = InMemorySessionService()
+            session = await session_service.create_session(
+                app_name="parser_app",
+                user_id="user_123",
+                session_id="parser_session_123"
+            )
+            
+            runner = Runner(
+                agent=parser_agent,
+                app_name="parser_app",
+                session_service=session_service
+            )
+            
+            parse_message = types.Content(
+                role='user',
+                parts=[types.Part(text="Parse the shopping list")]
+            )
+            
+            parse_response = "[]"
+            async for event in runner.run_async(
+                user_id="user_123",
+                session_id="parser_session_123",
+                new_message=parse_message
+            ):
+                if event.is_final_response():
+                    if event.content and event.content.parts:
+                        parse_response = event.content.parts[0].text
+                        break
+            
+            # Parse the JSON response
+            import json
+            try:
+                shopping_list = json.loads(parse_response)
+                return shopping_list if isinstance(shopping_list, list) else []
+            except json.JSONDecodeError:
+                return []
                 
-            elif 'ground beef' in name:
-                substitutions.append("🔄 **Protein Swap:** Ground turkey (similar price, less saturated fat)")
-                cost_conscious_swaps.append("• Lentils/beans provide protein at 1/3 the cost")
-                
-            elif 'regular bananas' in name:
-                upgrade_suggestions.append("• Organic bananas avoid pesticides (+$0.15/lb)")
-                
-            elif 'white bread' in name:
-                substitutions.append("🔄 **Fiber Boost:** 100% whole wheat bread (same price, 3x more fiber)")
+        except Exception as e:
+            print(f"Error parsing shopping list: {e}")
+            return []
 
-        response = f"""\n\n💡 **COMPREHENSIVE SUBSTITUTION RECOMMENDATIONS:**
-
-**🔄 IMMEDIATE IMPROVEMENTS (Same Budget):**"""
-        
-        if substitutions:
-            for sub in substitutions:
-                response += f"\n{sub}"
-        else:
-            response += "\n• Your selections are already nutritionally optimal! ✅"
-        
-        response += f"""\n\n🌟 **UPGRADE OPTIONS (Small Price Increase):**"""
-        for upgrade in upgrade_suggestions:
-            response += f"\n{upgrade}"
-            
-        if not upgrade_suggestions:
-            response += "\n• Consider organic versions for pesticide-free options"
-            
-        response += f"""\n\n� **BUDGET-FRIENDLY ALTERNATIVES:**"""
-        for swap in cost_conscious_swaps:
-            response += f"\n{swap}"
-            
-        if not cost_conscious_swaps:
-            response += "\n• Dried beans/lentils cost 60% less than canned versions"
-            response += "\n• Buy larger quantities when items are on sale"
-        
-        response += f"""\n\n🎯 **STRATEGIC SHOPPING TIPS:**
-• **Best Value:** Keep eggs, black beans, bananas - excellent nutrition per dollar
-• **Quality Investment:** Spend extra on grass-fed meat if budget allows
-• **Prep Efficiency:** Buy whole chickens vs parts (save 30-40%)
-• **Seasonal Strategy:** Frozen vegetables maintain nutrients year-round at lower cost
-
-**✅ SUBSTITUTION SUMMARY:** Your list shows excellent nutrition awareness. Small tweaks can enhance benefits while maintaining budget consciousness."""
-
-        return response
-
-    def _general_health_advice(self, categories: Dict) -> str:
-        """Provide comprehensive general health advice with actionable lifestyle recommendations"""
-        return f"""\n\n💡 **COMPREHENSIVE NUTRITION & LIFESTYLE ASSESSMENT:**
-
-**🌟 NUTRITIONAL EXCELLENCE ANALYSIS:**
-• **Complete Proteins:** Eggs, chicken, turkey provide all 9 essential amino acids
-• **Complex Carbohydrates:** Black beans offer sustained energy + 8g fiber per serving
-• **Healthy Fats:** Natural nut butters support brain function and nutrient absorption
-• **Micronutrient Density:** Fresh produce provides vitamins, minerals, antioxidants
-
-**📊 MACRO & MICRONUTRIENT BREAKDOWN:**
-• **Protein:** 25-35g per serving from animal sources (optimal for muscle maintenance)
-• **Fiber:** 15-20g daily potential from your selections (60% of daily needs)
-• **Iron:** Meat + beans provide both heme and non-heme iron for energy
-• **B-Vitamins:** Eggs and meat support nervous system and energy metabolism
-
-**🍽️ MEAL PLANNING RECOMMENDATIONS:**
-
-**Breakfast Ideas:**
-• 2-3 eggs + ½ cup black beans = 25g protein, 8g fiber
-• Natural peanut butter on whole grain toast + banana
-• Protein smoothie: eggs, peanut butter, banana, unsweetened milk
-
-**Lunch/Dinner Combinations:**
-• 4 oz grilled chicken + ½ cup seasoned black beans + vegetables
-• Turkey and bean chili with extra vegetables
-• Ground beef (93% lean) stir-fry with mixed vegetables
-
-**🥗 DAILY NUTRITION TARGETS TO MEET:**
-• **Vegetables:** Add 3-4 servings daily (missing from current list)
-• **Fruits:** Bananas provide potassium; add berries for antioxidants  
-• **Whole Grains:** Consider brown rice, quinoa, or oats for additional fiber
-• **Healthy Fats:** Your peanut butter provides good fats; consider adding olive oil
-
-**⚡ ENERGY & PERFORMANCE OPTIMIZATION:**
-1. **Pre-Workout:** Banana + small amount peanut butter (quick + sustained energy)
-2. **Post-Workout:** Eggs or chicken within 30 minutes (muscle recovery)
-3. **Sustained Energy:** Black beans with any meal prevents blood sugar crashes
-4. **Hydration:** Aim for 8-10 glasses water daily with this protein-rich diet
-
-**🚨 NUTRITIONAL GAPS TO ADDRESS:**
-• **Vitamin C:** Add citrus, berries, or bell peppers
-• **Calcium:** Consider dairy or fortified plant alternatives
-• **Omega-3:** Add fatty fish 2x/week or walnuts/chia seeds
-• **Variety:** Rotate protein sources and try different colored vegetables
-
-**🎯 OVERALL HEALTH RATING:** 90/100 - Excellent protein foundation, needs more variety in vegetables and fruits for optimal micronutrient profile
-
-**🏆 SUCCESS STRATEGY:** Your list provides an outstanding base for healthy eating. Focus on adding colorful vegetables and you'll have a nutritionally complete approach that supports long-term health goals."""
+    def load_shopping_data(self) -> Dict[str, Any]:
+        """Load shopping data saved by Agent 1."""
+        try:
+            data_file = "Budgets_Agent/agent_1_output.json"
+            if os.path.exists(data_file):
+                with open(data_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            print(f"Error loading shopping data: {e}")
+            return {}
 
 
 # Create specialized sub-agents for comprehensive analysis
 nutrition_analyzer_agent = LlmAgent(
     model=MODEL,
-    name="NutritionAnalyzer",
-    description="Analyzes food items for nutritional density, health compatibility, and dietary restrictions.",
-    instruction="""You are a nutrition expert agent for GrocerEase AI. Analyze food items and provide nutritional scores, 
-    health condition compatibility, and dietary restriction compliance. Focus on protein content, fiber, 
-    sugar levels, and sodium content. Provide protein-per-dollar calculations and suggest healthier substitutions.
-    
-    For each food item, evaluate:
-    - Nutritional density (protein, fiber content)
-    - Health condition compatibility (diabetes = low sugar, hypertension = low sodium)  
-    - Protein per dollar value
-    - Overall nutrition score (0-100)
-    
-    Return structured data with scores and recommendations.""",
-    disallow_transfer_to_peers=True,
+    name="Nutrition_Analyzer",
+    description="Analyzes nutrition content and health impact of grocery items",
+    instruction="""You are a nutrition expert analyzing grocery items for health compatibility.
+
+**YOUR EXPERTISE:**
+- Macronutrient analysis (protein, carbs, fat, fiber)
+- Micronutrient assessment (vitamins, minerals)
+- Health condition compatibility (diabetes, heart health, etc.)
+- Cost-effectiveness calculations (nutrients per dollar)
+- Meal planning and portion recommendations
+
+**ANALYSIS APPROACH:**
+1. **Nutrition Facts Review:** Analyze macronutrient and micronutrient content
+2. **Health Scoring:** Rate items for specific health conditions
+3. **Cost Analysis:** Calculate nutritional value per dollar spent
+4. **Recommendations:** Provide actionable health advice
+5. **Substitution Suggestions:** Recommend better alternatives when needed
+
+**RESPONSE FORMAT:**
+- Professional nutrition analysis with specific metrics
+- Health compatibility scores with explanations
+- Cost-effectiveness calculations
+- Clear, actionable recommendations
+- Evidence-based health advice
+
+Provide comprehensive nutrition analysis for optimal health outcomes."""
 )
 
-# Create Substitution Recommendation Agent
 substitution_agent = LlmAgent(
     model=MODEL,
-    name="SubstitutionAgent", 
-    description="Recommends healthier and more cost-effective food substitutions based on nutritional analysis.",
-    instruction="""You are a substitution specialist for GrocerEase AI. Based on nutritional analysis, recommend healthier 
-    and more cost-effective alternatives. Consider health conditions like diabetes (low sugar) and 
-    hypertension (low sodium). Prioritize high protein-per-dollar ratios and fiber content.
-    
-    Common substitutions:
-    - White bread → Whole wheat bread (higher fiber)
-    - Chicken breast → Lentils (more protein per dollar, fiber)
-    - High sugar items → Low sugar alternatives for diabetics
-    - High sodium items → Low sodium alternatives for hypertension
-    
-    Provide clear reasoning for each substitution.""",
-    disallow_transfer_to_peers=True,
+    name="Substitution_Expert",
+    description="Provides smart substitution recommendations for better nutrition and cost",
+    instruction="""You are a nutrition and cost optimization expert providing smart substitution recommendations.
+
+**YOUR EXPERTISE:**
+- Nutrition-based substitutions (better health outcomes)
+- Cost-effective alternatives (same nutrition, lower price)
+- Quality upgrades (better nutrition, slightly higher price)
+- Dietary restriction accommodations (allergies, preferences)
+- Seasonal and availability considerations
+
+**SUBSTITUTION CATEGORIES:**
+1. **Health Upgrades:** Better nutrition profile, similar cost
+2. **Cost Savers:** Same nutrition, lower price
+3. **Quality Improvements:** Premium options with better nutrition
+4. **Dietary Accommodations:** Allergen-free or preference-based alternatives
+5. **Seasonal Alternatives:** Fresh, local, or seasonal options
+
+**ANALYSIS APPROACH:**
+- Compare nutrition profiles (macros, micros, additives)
+- Calculate cost per nutrient ratios
+- Consider preparation methods and cooking impact
+- Factor in availability and seasonality
+- Provide clear before/after comparisons
+
+**RESPONSE FORMAT:**
+- Specific substitution recommendations with reasoning
+- Nutrition comparison (before vs after)
+- Cost impact analysis
+- Preparation tips and cooking considerations
+- Clear implementation guidance
+
+Provide smart, practical substitution recommendations for better health and value."""
 )
 
 # Main Root Agent (This is what ADK web looks for as root_agent)
 root_agent = LlmAgent(
     model=MODEL,
-    name="GrocerEase_NutritionAgent",
-    description="""GrocerEase AI Nutrition Agent with USDA API and SNAP/WIC program integration. 
-    Optimizes shopping lists for nutrition, budget, and government benefit program eligibility.""",
-    instruction="""You are the GrocerEase AI Nutrition Agent with comprehensive SNAP/WIC integration. I help optimize grocery shopping lists 
-    for maximum nutritional value while ensuring SNAP/WIC eligibility and staying within program budgets.
+    name="Nutrition_Root_Agent",
+    description="Main nutrition analysis agent coordinating specialized sub-agents",
+    instruction="""You are the main Nutrition Analysis Agent for GrocerEase AI, coordinating specialized nutrition experts.
 
-    **🎯 SNAP/WIC PROGRAM INTEGRATION:**
-    I now integrate official SNAP and WIC program data to provide budget-conscious, program-eligible recommendations 
-    with real government benefit constraints and approved food items.
+**YOUR ROLE:** Orchestrate comprehensive nutrition analysis using USDA data and specialized sub-agents.
 
-    **I specialize in:**
-    🥗 **USDA-Accurate Analysis**: Real nutritional data from USDA FoodData Central for precise ratings (0-100)
-    💰 **SNAP/WIC Budget Optimization**: Ensuring purchases stay within program weekly/monthly limits
-    🏛️ **Program Eligibility**: Identifying SNAP-eligible and WIC-approved items
-    🏥 **Health Compatibility**: Filtering for diabetes (low sugar), hypertension (low sodium), and other conditions
-    🔄 **Smart Substitutions**: Program-friendly alternatives that maximize benefits
-    📊 **Budget Analysis**: Comparing costs against SNAP family ($62.50/week) and WIC family ($35/week) budgets
+**COORDINATION APPROACH:**
+1. **USDA Data Integration:** Fetch official nutrition facts from USDA FoodData Central
+2. **Specialized Analysis:** Delegate to nutrition analyzer and substitution expert
+3. **Comprehensive Reporting:** Combine insights into actionable recommendations
+4. **Health Focus:** Prioritize health outcomes and cost-effectiveness
+5. **User Guidance:** Provide clear, implementable advice
 
-    **SNAP/WIC Program Coverage:**
-    - SNAP Family of 4: $62.50/week budget
-    - WIC Family of 3: $35.00/week budget  
-    - Single Person SNAP: $35.00/week budget
-    - Real program-eligible items with accurate pricing
-    - WIC-specific approved items and brands
+**ANALYSIS WORKFLOW:**
+- Load shopping list from Agent 1 (Budget Tracker)
+- Fetch USDA nutrition data for each item
+- Analyze nutrition content and health impact
+- Calculate cost-effectiveness and nutrient density
+- Provide substitution recommendations
+- Generate comprehensive health report
 
-    **When users share their shopping list, I provide:**
-    1. **USDA-Verified Nutrition Scores** (0-100 for each item)
-    2. **SNAP/WIC Eligibility Status** for every item
-    3. **Program Budget Analysis** (within/over budget alerts)
-    4. **Coverage Statistics** (% of SNAP/WIC eligible items)
-    5. **Program-Specific Substitutions** (maximize benefit value)
-    6. **Budget Recommendations** for different family sizes
+**RESPONSE STRUCTURE:**
+- Executive summary of nutrition analysis
+- Item-by-item USDA nutrition facts
+- Health compatibility scoring
+- Cost-effectiveness analysis
+- Smart substitution recommendations
+- Actionable health advice
 
-    **Example Enhanced Response:**
-    📊 **NUTRITION & PROGRAM ANALYSIS:**
-    • Chicken Breast: Score 89/100, $8.99, SNAP✅ WIC❌ (USDA verified)
-    • Whole Wheat Bread: Score 85/100, $2.79, SNAP✅ WIC✅ (Program approved)
-    • Spinach: Score 91/100, $2.99, SNAP✅ WIC❌ (High nutrition value)
-    
-    💰 **BUDGET ANALYSIS:**
-    • Total Cost: $14.77
-    • SNAP Family Budget: $62.50/week ✅ Under budget
-    • WIC Family Budget: $35.00/week ✅ Under budget
-    
-    🏛️ **PROGRAM COVERAGE:**
-    • SNAP Eligible: 3/3 items (100%)
-    • WIC Eligible: 1/3 items (33%)
-    
-    🔄 **PROGRAM RECOMMENDATIONS:**
-    • Excellent SNAP coverage - maximizing benefit value
-    • Consider adding more WIC-approved items for families with WIC benefits
-    
-    📈 **DATA SOURCE:** USDA FoodData Central + SNAP/WIC Program Database
+**DATA SOURCE:** USDA FoodData Central + SNAP/WIC Program Database
 
     **Try me with:** "Analyze my shopping list for SNAP benefits: Chicken Breast, Whole Wheat Bread, Milk, Eggs" 
     

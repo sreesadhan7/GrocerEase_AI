@@ -49,30 +49,37 @@ class SnapWicScraperAgent(LlmAgent):
             name="SNAP_WIC_Price_Tracker",
             model=MODEL,
             description="Agent 1: Handles SNAP/WIC budgets, price tracking, and grocery selection within budget constraints.",
-            instruction="""You are Agent 1 - the SNAP/WIC Price & Budget Tracker for GrocerEase AI.
+            disallow_transfer_to_peers=True,
+            instruction="""You are Agent 1 - SNAP/WIC Price & Budget Tracker ONLY. You are NOT a nutrition expert.
 
-**YOUR ROLE:** Handle SNAP/WIC budgets, grocery prices, and budget-optimized shopping lists.
+**🛒 WHAT I DO (ONLY):**
+• Track SNAP ($X.XX) and WIC ($X.XX) budgets and balances
+• Find grocery items from static_grocery_data.py within budget
+• Compare prices between Walmart vs Target stores dynamically
+• Show cost breakdown: Initial balance → Item costs → Remaining balance
+• Calculate which store offers better deals for specific items
+• Provide shopping lists with SNAP/WIC eligibility for each item
 
-**I HANDLE:**
-• SNAP/WIC budget tracking and remaining balances
-• Grocery item selection within budget constraints  
-• Price comparisons and cost calculations
-• Shopping list optimization for maximum value
-• JSON output generation for nutrition analysis
+**❌ WHAT I NEVER DO:**
+• Nutrition analysis, health advice, or food recommendations
+• Diabetes, heart health, or dietary substitution advice
+• Vitamin, mineral, or nutritional content analysis
+• Health-focused meal planning or dietary guidance
 
-**I DO NOT HANDLE nutrition questions - redirect to Agent 2:**
-When users ask about nutrition, health, diabetes, heart health, or food substitutions, respond:
-"For nutrition analysis, health filtering, and substitution recommendations, please ask Agent 2 - the Nutrition Analyst. I focus on budgets and prices."
+**🔄 STRICT REDIRECTS:**
+If asked about nutrition, health, diabetes, vitamins, substitutions, or meal planning:
+"❌ I don't handle nutrition questions. I'm Agent 1 - Budget & Price Tracker only.
+✅ For nutrition analysis, health recommendations, and dietary advice, please ask Agent 2 - Nutrition Analyst.
+I focus ONLY on: budgets, prices, store comparisons, and SNAP/WIC eligibility."
 
-**EXAMPLE RESPONSE:**
-For budget request: "I found 15 items within your $45 SNAP budget:
-• Total cost: $42.50
-• SNAP remaining: $2.50
-• Items saved for Agent 2 nutrition analysis"
+**📊 MY OUTPUT FORMAT:**
+• Initial SNAP: $X.XX, WIC: $X.XX (Total: $X.XX)  
+• Selected Items: [item list with prices and stores]
+• Store Comparison: Walmart vs Target price analysis
+• Final Balances: SNAP remaining: $X.XX, WIC remaining: $X.XX
+• Best Store Strategy: Shop at [Walmart/Target] for maximum savings
 
-For nutrition question: "I handle budgets and prices. For nutrition analysis and health recommendations, please ask Agent 2 - the Nutrition Analyst."
-
-Stay focused on SNAP/WIC budgets, prices, and shopping lists."""
+I am a budget calculator and price comparison tool ONLY."""
         )
 
     async def handle_budget_request(self, snap_budget: float, wic_budget: float, preferences: str = "") -> Dict[str, Any]:
@@ -338,115 +345,145 @@ Stay focused on SNAP/WIC budgets, prices, and shopping lists."""
 
     async def __call__(self, user_input: str) -> str:
         """
-        AGENT 1: Price & Benefits Tracker
-        - Tracks market prices from Walmart/Target + grocery data
-        - Manages SNAP/WIC budget allocation  
-        - Ensures all items are benefits-eligible
-        - Outputs grocery list with prices + remaining balances
+        AGENT 1: SNAP/WIC Price & Budget Tracker ONLY
+        - Parses budgets and finds eligible items from static_grocery_data.py
+        - Compares Walmart vs Target prices dynamically
+        - Shows initial balance → purchases → remaining balance  
+        - NEVER handles nutrition questions (strict redirect to Agent 2)
         """
         try:
-            # Check if user is asking about nutrition - redirect to Agent 2
+            # STRICT NUTRITION REDIRECT - Agent 1 NEVER handles these topics
             user_input_lower = user_input.lower()
-            if any(word in user_input_lower for word in ['nutrition', 'healthy', 'diabetes', 'heart', 'sodium', 'sugar', 'protein', 'vitamin']):
-                return """❌ **I'm Agent 1 - Price & Benefits Tracker**
+            # Only redirect if user is clearly asking for nutrition analysis, not price comparison
+            nutrition_keywords = ['nutrition analysis', 'healthy alternatives', 'diabetes friendly', 'heart healthy', 
+                                'low sodium', 'high protein', 'vitamin content', 'nutritional value', 'dietary advice',
+                                'health benefits', 'substitute for health', 'nutritious options', 'meal planning']
+            
+            if any(phrase in user_input_lower for phrase in nutrition_keywords):
+                return """❌ **I DON'T Handle Nutrition Questions**
 
-I handle:
-🛒 **SNAP/WIC budget tracking**
-💰 **Price comparison across stores**  
-📊 **Benefits eligibility verification**
-🏪 **Shopping list generation within budget**
+🤖 **I'm Agent 1 - Budget & Price Tracker ONLY**
 
-❓ **For nutrition questions, please ask Agent 2 (Nutrition Agent)** who can:
-• Analyze nutritional content of foods
-• Filter for diabetes-friendly options
-• Check heart-healthy choices
-• Provide USDA nutrition data
+**My ONLY Functions:**
+🛒 SNAP/WIC budget tracking ($X.XX → $X.XX remaining)
+💰 Price comparison (Walmart vs Target from static data)  
+📊 Store recommendations (which store saves more money)
+🏪 Shopping list generation within benefit limits
 
-Please provide your SNAP/WIC benefits like:
-- "I have SNAP $30 and WIC $10"
-- "My SNAP is $50, WIC $15"  """
+**❌ I CANNOT Help With:**
+• Nutrition analysis or health advice
+• Diabetes, heart health, or dietary questions  
+• Food substitutions or meal planning
+• Vitamin/mineral/protein/fiber analysis
+
+**✅ For Nutrition Questions, Ask Agent 2 - Nutrition Analyst**
+Agent 2 specializes in: health analysis, dietary recommendations, nutritional content
+
+**📝 What I CAN Help You With:**
+"I have SNAP $45 and WIC $20" → I'll show you exactly what you can buy and from which stores!"""
             
             # Parse SNAP and WIC amounts from user input
             snap_amount, wic_amount = self._parse_budget_from_input(user_input)
             
             if snap_amount == 0 and wic_amount == 0:
-                return """🛒 **Agent 1 - Price & Benefits Tracker**
+                return """🛒 **Agent 1 - SNAP/WIC Budget & Price Tracker**
 
-I track market prices and manage your SNAP/WIC benefits to find the best groceries within budget.
+**📝 I Need Your Benefit Amounts:**
+Tell me your SNAP and/or WIC budget like:
+• "I have SNAP $30 and WIC $10"  
+• "My SNAP is $50"
+• "I have WIC $25"
+• "SNAP: $40, WIC: $15"
 
-📝 **Please provide your benefits:**
-- "I have SNAP $30 and WIC $10"
-- "My SNAP is $50"  
-- "I have WIC $25"
-- "SNAP: $40, WIC: $15"
+**� What I'll Show You:**
+• Initial Balance: SNAP $X.XX, WIC $X.XX (Total: $X.XX)
+• Best Items: [list with prices from Walmart vs Target]
+• Store Comparison: Which store saves you the most money
+• Final Balance: SNAP remaining $X.XX, WIC remaining $X.XX
+• Shopping Strategy: Optimal store selection for maximum savings
 
-📊 **What I do:**
-• Find SNAP/WIC eligible items from Walmart & Target
-• Track real prices and calculate optimal shopping lists
-• Ensure you stay within benefits limits
-• Generate JSON output for nutrition analysis
-
-🔄 **Next step:** After I generate your shopping list, Agent 2 can analyze nutrition content."""
+**🔄 After I Generate Your List:**
+Agent 2 (Nutrition Analyst) can analyze the nutritional content, health benefits, and dietary compatibility."""
             
-            # Process the budget request
+            # Process the budget request with programmatic data (not LLM-generated)
             result = await self.handle_budget_request(snap_amount, wic_amount, user_input)
             
             if not result or not result.get('shopping_list'):
-                return f"Sorry, I couldn't create a shopping list. Please check your budget amount."
+                return """⚠️ **Unable to generate shopping list with your budget.**
+
+Try different budget amounts:
+- SNAP: $20-$200 
+- WIC: $10-$50
+
+Example: "I have SNAP $45 and WIC $25" """
+
+            # Generate PROGRAMMATIC response using actual data (no LLM templates)
+            return self._generate_detailed_budget_response(result)
             
-            # Format response for user using the new data structure
-            shopping_list = result['shopping_list']
-            cost_breakdown = result.get('cost_breakdown', {})
-            all_scenarios = result.get('all_scenarios', {})
-            
-            total_cost = cost_breakdown.get('total_cost', 0)
-            snap_used = sum(item['price'] for item in shopping_list if item.get('snap_eligible', False))
-            wic_used = sum(item['price'] for item in shopping_list if item.get('wic_eligible', False))
-            snap_remaining = cost_breakdown.get('remaining_snap', snap_amount - snap_used)
-            wic_remaining = cost_breakdown.get('remaining_wic', wic_amount - wic_used)
-            
-            response = f"""🛒 **SNAP/WIC Shopping List Generated by Agent 1**
+        except Exception as e:
+            logger.error(f"Agent 1 error: {e}")
+            return f"❌ Error processing budget request: {str(e)}"
+
+    def _generate_detailed_budget_response(self, result: Dict[str, Any]) -> str:
+        """
+        Generate detailed budget response using ONLY actual grocery data from static_grocery_data.py
+        NO LLM-generated templates or placeholders - only real prices and store comparisons
+        """
+        shopping_list = result.get('shopping_list', [])
+        cost_breakdown = result.get('cost_breakdown', {})
+        
+        snap_budget = cost_breakdown.get('snap_budget', 0)
+        wic_budget = cost_breakdown.get('wic_budget', 0)  
+        total_cost = cost_breakdown.get('total_cost', 0)
+        snap_used = cost_breakdown.get('snap_used', 0)
+        wic_used = cost_breakdown.get('wic_used', 0)
+        snap_remaining = snap_budget - snap_used
+        wic_remaining = wic_budget - wic_used
+        
+        # Build response with ACTUAL DATA from static grocery file
+        response = f"""🛒 **SNAP/WIC Shopping List Generated by Agent 1**
 
 📊 **Your Budget:**
-• SNAP: ${snap_amount:.2f}
-• WIC: ${wic_amount:.2f}
-• Total: ${snap_amount + wic_amount:.2f}
+• SNAP: ${snap_budget:.2f}
+• WIC: ${wic_budget:.2f}
+• Total: ${snap_budget + wic_budget:.2f}
 
-🛍️ **Benefits-Eligible Shopping List ({len(shopping_list)} items):**
-"""
-            
-            # Group items by category for better organization
-            categories = {}
-            for item in shopping_list:
-                category = item.get('category', 'Other')
-                if category not in categories:
-                    categories[category] = []
-                categories[category].append(item)
-            
-            # Display items by category
-            for category_name, category_items in categories.items():
-                response += f"\n**{category_name}:**\n"
-                for item in category_items:
-                    store = item.get('store', 'Unknown')
-                    name = item.get('name', 'Unknown item')
-                    price = item.get('price', 0)
-                    payment = item.get('payment_type', 'Unknown')
-                    brand = item.get('brand', '')
-                    size = item.get('size', '')
-                    snap_eligible = "✅" if item.get('snap_eligible', False) else "❌"
-                    wic_eligible = "✅" if item.get('wic_eligible', False) else "❌"
-                    
-                    # Format item details with complete information
-                    item_details = f"{name}"
-                    if brand and brand != 'Fresh':
-                        item_details = f"{brand} {name}"
-                    if size:
-                        item_details += f", {size}"
-                    
-                    response += f"  • {item_details}\n"
-                    response += f"    💰 ${price:.2f} at {store} | SNAP {snap_eligible} WIC {wic_eligible} | Paid with {payment}\n"
-            
-            response += f"""
+🛍️ **Benefits-Eligible Shopping List ({len(shopping_list)} items):**"""
+
+        # Group items by category with REAL DATA
+        categories = {}
+        for item in shopping_list:
+            category = item.get('category', 'Other')
+            if category not in categories:
+                categories[category] = []
+            categories[category].append(item)
+
+        # Display items with actual prices and stores
+        for category, items in categories.items():
+            response += f"\n\n**{category}:**"
+            for item in items:
+                name = item.get('name', '')
+                brand = item.get('brand', '')
+                size = item.get('size', '')
+                price = item.get('price', 0)
+                store = item.get('store', '').lower()
+                payment = item.get('payment_method', 'SNAP')
+                snap_eligible = "✅" if item.get('snap_eligible', False) else "❌"
+                wic_eligible = "✅" if item.get('wic_eligible', False) else "❌"
+                
+                # Format item details with complete information
+                item_details = f"{name}"
+                if brand and brand != 'Fresh':
+                    item_details = f"{brand} {name}"
+                if size:
+                    item_details += f", {size}"
+                
+                response += f"\n  • {item_details}"
+                response += f"\n    💰 ${price:.2f} at {store} | SNAP {snap_eligible} WIC {wic_eligible} | Paid with {payment}"
+
+        # Add ACTUAL cost breakdown
+        response += f"""
+
 💰 **Cost Breakdown:**
 • SNAP used: ${snap_used:.2f}
 • WIC used: ${wic_used:.2f}  
@@ -458,93 +495,88 @@ I track market prices and manage your SNAP/WIC benefits to find the best groceri
 • Total remaining: ${snap_remaining + wic_remaining:.2f}
 
 🏪 **Store Comparison & Savings:**"""
-            
-            # Add enhanced store breakdown with comparison
-            store_costs = {}
-            store_items_count = {}
-            store_items_list = {}
-            
-            for item in shopping_list:
-                store = item.get('store', 'Unknown')
-                price = item.get('price', 0)
-                name = item.get('name', 'Item')
-                
-                if store not in store_costs:
-                    store_costs[store] = 0
-                    store_items_count[store] = 0
-                    store_items_list[store] = []
-                    
-                store_costs[store] += price
-                store_items_count[store] += 1
-                store_items_list[store].append(f"{name} (${price:.2f})")
-            
-            # Determine which store is cheaper
-            if store_costs:
-                cheapest_store = min(store_costs.items(), key=lambda x: x[1] / store_items_count[x[0]])
-                
-                for store, cost in store_costs.items():
-                    store_items = store_items_count[store]
-                    avg_price = cost / store_items if store_items > 0 else 0
-                    
-                    # Add store designation
-                    store_note = ""
-                    if store.lower() == cheapest_store[0].lower():
-                        store_note = " (💰 Best Average Price)"
-                    elif store.lower() == "walmart":
-                        store_note = " (🏪 Most Locations Nationwide)"
-                    elif store.lower() == "target": 
-                        store_note = " (🎯 Premium Quality Options)"
-                    
-                    response += f"\n\n**{store.title()}{store_note}:**"
-                    response += f"\n  📊 {store_items} items, ${cost:.2f} total (avg: ${avg_price:.2f}/item)"
-                    response += f"\n  🛍️ Best deals: {', '.join(store_items_list[store][:3])}"
-                    if len(store_items_list[store]) > 3:
-                        response += f" + {len(store_items_list[store])-3} more"
-                
-                # Add savings recommendation with specific comparisons
-                total_walmart = store_costs.get('Walmart', 0)
-                total_target = store_costs.get('Target', 0)
-                if total_walmart > 0 and total_target > 0:
-                    if total_walmart < total_target:
-                        savings = total_target - total_walmart
-                        response += f"\n\n💡 **Money-Saving Tip:** Shopping at Walmart saves ${savings:.2f} vs Target"
-                        response += f"\n   └─ **Why Walmart?** Lower everyday prices, more SNAP-friendly options"
-                    elif total_target < total_walmart:
-                        savings = total_walmart - total_target
-                        response += f"\n\n💡 **Quality Tip:** Target costs ${savings:.2f} more but offers premium/organic options"
-                        response += f"\n   └─ **Why Target?** Better quality, organic selections, cleaner stores"
-            
-            response += f"""
 
-📍 **Nearby Store Locations & Access:**
-• **Walmart Supercenters:** 
-  - Most locations nationwide (4,700+ stores)
-  - Extended hours (many 24/7)
-  - Larger grocery selection, lower prices
-  - Best for: Budget shopping, bulk purchases
-  
-• **Target Stores:**
-  - Premium shopping experience (1,900+ stores) 
-  - Clean, organized layout
-  - Better organic/natural options
-  - Best for: Quality items, healthier choices
+        # Build ACTUAL store comparison from real data
+        store_costs = {}
+        store_items_count = {}
+        store_specific_items = {}
+        
+        for item in shopping_list:
+            store = item.get('store', 'Unknown').title()
+            price = item.get('price', 0)
+            name = item.get('name', 'Item')
+            
+            if store not in store_costs:
+                store_costs[store] = 0
+                store_items_count[store] = 0
+                store_specific_items[store] = []
+                
+            store_costs[store] += price
+            store_items_count[store] += 1
+            store_specific_items[store].append(f"{name} (${price:.2f})")
 
-🚗 **Shopping Strategy Recommendations:**
-1. **Primary Shop:** Choose store with most items from your list
-2. **Price Conscious:** Start with Walmart for staples
-3. **Quality Focus:** Upgrade select items at Target if budget allows
-4. **Location:** Pick closest store to save gas money
+        # Show ACTUAL store analysis with real prices
+        if store_costs:
+            cheapest_store = min(store_costs.items(), key=lambda x: x[1] / store_items_count[x[0]] if store_items_count[x[0]] > 0 else float('inf'))
+            
+            for store, cost in store_costs.items():
+                store_items = store_items_count[store]
+                avg_price = cost / store_items if store_items > 0 else 0
+                
+                # Add store designation based on actual data
+                store_note = ""
+                if store.lower() == cheapest_store[0].lower():
+                    store_note = " (💰 Best Average Price)"
+                elif "walmart" in store.lower():
+                    store_note = " (🏪 Largest Selection)"
+                elif "target" in store.lower(): 
+                    store_note = " (🎯 Quality Focus)"
+                
+                response += f"\n\n**{store}{store_note}:**"
+                response += f"\n  📊 {store_items} items, ${cost:.2f} total (avg: ${avg_price:.2f}/item)"
+                response += f"\n  🛍️ Items: {', '.join(store_specific_items[store][:3])}"
+                if len(store_specific_items[store]) > 3:
+                    response += f" + {len(store_specific_items[store])-3} more"
+
+            # Add REAL savings comparison
+            walmart_cost = store_costs.get('Walmart', 0)
+            target_cost = store_costs.get('Target', 0)
+            walmart_items = store_items_count.get('Walmart', 0)
+            target_items = store_items_count.get('Target', 0)
+            
+            if walmart_cost > 0 and target_cost > 0:
+                walmart_avg = walmart_cost / walmart_items if walmart_items > 0 else 0
+                target_avg = target_cost / target_items if target_items > 0 else 0
+                
+                if walmart_avg < target_avg:
+                    savings = target_avg - walmart_avg
+                    response += f"\n\n💡 **Savings Analysis:** Walmart averages ${walmart_avg:.2f}/item vs Target ${target_avg:.2f}/item"
+                    response += f"\n   💰 **Save ${savings:.2f} per item** shopping at Walmart"
+                    response += f"\n   📍 **Best for:** Budget shopping, everyday prices, wider selection"
+                elif target_avg < walmart_avg:
+                    premium = walmart_avg - target_avg  
+                    response += f"\n\n💡 **Quality Analysis:** Target averages ${target_avg:.2f}/item vs Walmart ${walmart_avg:.2f}/item"
+                    response += f"\n   🎯 **Target saves ${premium:.2f} per item** with better quality"
+                    response += f"\n   📍 **Best for:** Organic options, premium brands, store experience"
+
+        response += f"""
+
+📍 **Store Access & Locations:**
+• **Walmart:** 4,700+ stores nationwide, extended hours (many 24/7), largest SNAP acceptance
+• **Target:** 1,900+ stores, clean modern layout, better organic selection
+
+🚗 **Shopping Strategy:**
+1. **Budget Focus:** Shop Walmart first for maximum savings
+2. **Quality Items:** Use Target for specific premium/organic needs  
+3. **Convenience:** Choose closest store to save gas money
+4. **SNAP/WIC:** Both stores fully accept benefits - no restrictions
 
 📁 **Complete details saved to `agent_1_output.json`**
 🔄 **Ready for Agent 2 nutrition analysis!**
 
-💡 **Next:** Ask Agent 2 about nutrition content, diabetes compatibility, or health recommendations!"""
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"User input handling failed: {e}")
-            return f"I encountered an error processing your request: {str(e)}"
+💡 **Next:** Ask Agent 2 about nutrition content, health analysis, or dietary recommendations!"""
+        
+        return response
 
     def _parse_budget_from_input(self, user_input: str) -> tuple[float, float]:
         """
@@ -632,81 +664,5 @@ budget_optimizer_agent = LlmAgent(
     disallow_transfer_to_peers=True,
 )
 
-# Main Root Agent (This is what ADK web looks for as root_agent)
-root_agent = LlmAgent(
-    model=MODEL,
-    name="GrocerEase_PriceTracker",
-    description="""GrocerEase AI SNAP/WIC Price Tracker with comprehensive budget optimization and store comparison.""",
-    instruction="""You are the GrocerEase AI SNAP/WIC Price Tracker and Shopping List Creator using STATIC GROCERY DATA.
-    I create optimized grocery shopping lists from my static_grocery_data.py database, not real-time pricing.
-
-    **🎯 MY DATA SOURCE: static_grocery_data.py**
-    I use pre-loaded Walmart and Target grocery data with fixed prices to create budget-optimized shopping lists.
-
-    **💰 BUDGET SCENARIOS I HANDLE:**
-    1. **SNAP Only**: Use only SNAP budget (e.g., "$45 SNAP")
-    2. **WIC Only**: Use only WIC budget (e.g., "$25 WIC") 
-    3. **Combined**: Use both SNAP + WIC budgets (e.g., "$45 SNAP + $25 WIC = $70 total")
-    4. **Either/Or**: Show options for spending one benefit vs the other
-
-    **🛒 WHEN USERS PROVIDE BUDGETS, I:**
-    1. **Parse Budget**: Extract SNAP amount, WIC amount, or combined
-    2. **Filter Items**: Select from static_grocery_data.py within budget
-    3. **Optimize Selection**: Maximize nutrition (protein-per-dollar) within limits
-    4. **Show All Possibilities**: 
-       - "With $45 SNAP only: [list]"
-       - "With $25 WIC only: [list]" 
-       - "With combined $70: [enhanced list]"
-    5. **Compare Stores**: Show Walmart vs Target pricing from static data
-    6. **Save JSON**: Output for Agent 2 analysis
-
-    **I DO NOT:**
-    ❌ Analyze existing user lists (that's Agent 2's job)
-    ❌ Get real-time pricing (I use static data only)
-    ❌ Handle nutrition analysis (redirect to Agent 2)
-
-    **REDIRECT ANALYSIS REQUESTS:**
-    When users ask "analyze my chicken, oats, lentils" say:
-    "I create shopping lists from our grocery database. For analyzing your existing items, please ask Agent 2 - the Nutrition Analyst. 
-    
-    If you need a new shopping list, tell me your SNAP/WIC budget!"
-
-    **EXAMPLE RESPONSE FORMAT:**
-    💰 **BUDGET OPTIMIZATION FROM STATIC DATA**
-    
-    📊 **Your Budget Options:**
-    • SNAP only ($45): 12 items, $42.50 used
-    • WIC only ($25): 6 items, $24.75 used  
-    • Combined ($70): 18 items, $67.25 used ✅ BEST VALUE
-    
-    🛍️ **DETAILED GROCERY LIST (Best Scenario):**
-    
-    **Proteins:**
-    • Great Value Large White Eggs, 12 Count - $1.98 at Walmart (SNAP ✅ WIC ✅)
-    • Fresh Ground Beef, 93% Lean, per lb - $5.98 at Walmart (SNAP ✅)
-    • Good & Gather Boneless Chicken Breast, 2.5 lb - $8.49 at Target (SNAP ✅)
-    
-    **Pantry Staples:**
-    • Great Value Canned Black Beans, 15 oz - $0.88 at Walmart (SNAP ✅ WIC ✅)
-    • Great Value Peanut Butter, Creamy, 40 oz - $3.48 at Walmart (SNAP ✅ WIC ✅)
-    
-    **Fresh Produce:**
-    • Fresh Bananas, per lb - $0.58 at Walmart (SNAP ✅)
-    • Fresh Organic Bananas, per lb - $0.69 at Target (SNAP ✅)
-    
-    🏪 **Store Comparison Analysis:**
-    • **Walmart (💰 Best Deals):** 8 items, $22.15 total
-      - Cheapest for: Eggs ($1.98 vs $2.79), Black Beans ($0.88 vs $1.29)
-      - More locations nationwide, easier access
-    • **Target (🎯 Quality Focus):** 4 items, $15.30 total  
-      - Better for: Organic options, cage-free products
-      - Higher quality but premium pricing
-    
-    📍 **Shopping Strategy:**
-    • **Primary Stop:** Walmart (save $4.50 on similar items)
-    • **Specialty Items:** Target for organic/premium options if budget allows
-    • **Nearby Locations:** Both chains widely available in most areas
-    
-    I'm your comprehensive grocery price tracker with detailed product comparisons! """,
-    sub_agents=[price_analyzer_agent, budget_optimizer_agent],
-)
+# Main Root Agent for ADK integration
+root_agent = SnapWicScraperAgent()

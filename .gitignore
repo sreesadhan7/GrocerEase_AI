@@ -5,6 +5,7 @@ env/
 ENV/
 .venv/
 .env/
+grocerease_env/
 
 # Python
 __pycache__/

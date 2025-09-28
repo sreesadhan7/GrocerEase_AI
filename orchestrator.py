@@ -309,50 +309,77 @@ class GrocerEaseOrchestrator:
             }
 
     async def _get_price_data_via_a2a(self, analysis: Dict[str, Any], user_message: str = "") -> Dict[str, Any]:
-        """Get price data using A2A communication with price agent."""
+        """Get price data using direct Agent 1 call."""
         try:
-            # Prepare A2A message for price agent
-            requested_items = analysis.get("requested_items", [])
-            # If no specific items requested, use default grocery items
-            if not requested_items:
-                requested_items = ["milk", "bread", "eggs", "chicken", "rice", "carrots", "bananas", "cheese"]
-
-            a2a_message = {
-                "message_type": "get_prices_with_nutrition",
-                "message_data": {
-                    "items": requested_items,
-                    "budget": analysis.get("budget", 50.0),
-                    "benefit_type": analysis.get("benefit_type", "SNAP"),
-                    "health_conditions": analysis.get("health_conditions", []),
-                    "user_request": user_message
-                },
-                "sender_id": self.orchestrator_id
+            # Extract budget information for Agent 1
+            budget = analysis.get("budget", 50.0)
+            benefit_type = analysis.get("benefit_type", "SNAP")
+            
+            # Create a budget request message for Agent 1
+            if benefit_type == "SNAP":
+                budget_message = f"I have SNAP ${budget:.0f}"
+            elif benefit_type == "WIC":
+                budget_message = f"I have WIC ${budget:.0f}"
+            else:
+                # Split budget between SNAP and WIC if combined
+                snap_portion = budget * 0.7  # 70% SNAP
+                wic_portion = budget * 0.3   # 30% WIC
+                budget_message = f"I have SNAP ${snap_portion:.0f} and WIC ${wic_portion:.0f}"
+            
+            # Call Agent 1 directly using its __call__ method
+            agent1_response = await price_agent(budget_message)
+            
+            # Return the response text and also check for JSON data
+            response_data = {
+                "agent1_response": agent1_response,
+                "budget_processed": True
             }
             
-            # Send A2A message to price agent
-            response = await price_agent.handle_a2a_message(
-                message_type="get_prices_with_nutrition",
-                message_data=a2a_message["message_data"],
-                sender_id=self.orchestrator_id
-            )
+            # Try to load Agent 1's JSON output for structured data
+            try:
+                agent1_output_path = os.path.join(os.path.dirname(__file__), 'Budgets_Agent', 'agent_1_output.json')
+                if os.path.exists(agent1_output_path):
+                    with open(agent1_output_path, 'r') as f:
+                        agent1_data = json.load(f)
+                        response_data["shopping_list"] = agent1_data.get("shopping_list", [])
+                        response_data["cost_breakdown"] = agent1_data.get("cost_breakdown", {})
+            except:
+                pass
             
-            return response.get("response", {})
+            return response_data
             
         except Exception as e:
-            pass
-            return {"error": str(e)}
+            logger.error(f"Error in _get_price_data_via_a2a: {e}")
+            return {"error": str(e), "agent1_response": f"Error: {str(e)}"}
 
     async def _get_nutrition_data_via_a2a(self, analysis: Dict[str, Any], user_message: str = "") -> Dict[str, Any]:
         """Get nutrition data using A2A communication with nutrition agent."""
         try:
+            # Check if Agent 1 has produced output for automatic continuity
+            agent1_output_path = os.path.join(os.path.dirname(__file__), 'Budgets_Agent', 'agent_1_output.json')
+            agent1_items = []
+            
+            if os.path.exists(agent1_output_path):
+                try:
+                    with open(agent1_output_path, 'r', encoding='utf-8') as f:
+                        agent1_data = json.load(f)
+                        agent1_items = agent1_data.get('shopping_list', [])
+                        print(f"Orchestrator: Found {len(agent1_items)} items from Agent 1 for A2A continuity")
+                except Exception as e:
+                    print(f"Orchestrator: Could not load Agent 1 data: {e}")
+            
             # Prepare A2A message for comprehensive nutrition filtering
+            # Use Agent 1 items if available, otherwise fall back to requested_items
+            items_to_analyze = agent1_items if agent1_items else analysis.get("requested_items", [])
+            
             a2a_message = {
                 "message_type": "filter_nutrition", 
                 "message_data": {
-                    "items": analysis.get("requested_items", []),
+                    "items": items_to_analyze,
                     "budget": analysis.get("budget", 50.0),
                     "health_conditions": analysis.get("health_conditions", []),
-                    "user_request": user_message  # Pass original request for parsing nutrition requirements
+                    "user_request": user_message,  # Pass original request for parsing nutrition requirements
+                    "source": "agent1_continuity" if agent1_items else "direct_request"
                 },
                 "sender_id": self.orchestrator_id
             }
@@ -383,11 +410,25 @@ class GrocerEaseOrchestrator:
             if health_conditions:
                 health_context = f"\nHEALTH CONSIDERATIONS: User has {', '.join(health_conditions)}. Items have been filtered for compatibility."
             
-            # Extract nutrition insights
+            # Extract nutrition insights and full report if available
             nutrition_insights = ""
-            if nutrition_data and "nutrition_analysis" in nutrition_data:
-                avg_score = nutrition_data["nutrition_analysis"].get("average_nutrition_score", 0)
-                nutrition_insights = f"\nNUTRITION INSIGHTS: Average nutrition score: {avg_score}/100. Items selected for optimal health benefits."
+            full_nutrition_report = ""
+            if nutrition_data:
+                # Check for structured nutrition response from Agent 2
+                if nutrition_data.get("nutrition_report"):
+                    full_nutrition_report = nutrition_data["nutrition_report"]
+                elif nutrition_data.get("response", {}).get("nutrition_report"):
+                    full_nutrition_report = nutrition_data["response"]["nutrition_report"]
+                
+                # Legacy format support
+                if "nutrition_analysis" in nutrition_data:
+                    avg_score = nutrition_data["nutrition_analysis"].get("average_nutrition_score", 0)
+                    nutrition_insights = f"\nNUTRITION INSIGHTS: Average nutrition score: {avg_score}/100. Items selected for optimal health benefits."
+            
+            # Detect if this is a nutrition-focused question
+            nutrition_keywords = ['nutrition', 'nutrients', 'protein', 'vitamin', 'mineral', 'fiber', 'calcium', 
+                                'iron', 'healthy', 'diabetes', 'heart', 'analyze', 'nutrient']
+            is_nutrition_focused = any(keyword in user_message.lower() for keyword in nutrition_keywords)
             
             gemini_prompt = f"""
             You are a helpful grocery shopping assistant. The user said: "{user_message}"
@@ -397,6 +438,8 @@ class GrocerEaseOrchestrator:
             PRICE DATA: {price_data}
             {health_context}
             {nutrition_insights}
+            
+            {"FULL NUTRITION ANALYSIS:" + full_nutrition_report if full_nutrition_report and is_nutrition_focused else ""}
             
             Provide a friendly, helpful response that:
             1. Acknowledges their specific needs (health conditions, budget, benefit type)
@@ -444,53 +487,74 @@ class GrocerEaseOrchestrator:
             return await self._generate_intelligent_recommendation(analysis, price_data, nutrition_data, user_message)
 
     async def _generate_intelligent_recommendation(self, analysis: Dict[str, Any], price_data: Dict[str, Any], nutrition_data: Dict[str, Any], user_message: str) -> str:
-        """Generate short shopping recommendations with item prices."""
+        """Generate comprehensive recommendation using Agent 1 and Agent 2 outputs."""
         try:
+            # Check if Agent 1 provided a full response
+            agent1_response = price_data.get("agent1_response", "")
+            nutrition_response = nutrition_data.get("nutrition_analysis", "") or nutrition_data.get("agent2_response", "")
+            
+            # If Agent 1 provided a complete response, use it as the base
+            if agent1_response and len(agent1_response) > 100:
+                final_response = agent1_response
+                
+                # Add nutrition analysis if available
+                if nutrition_response and len(nutrition_response) > 50:
+                    final_response += f"\n\n{nutrition_response}"
+                
+                return final_response
+            
+            # Fallback to basic recommendation if Agent 1 response is missing
             budget = analysis.get("budget", 50.0)
             benefit_type = analysis.get("benefit_type", "SNAP")
-
-            # Simple recommendation with item details
-            if "stores" in price_data and not "error" in price_data:
-                stores = price_data["stores"]
-                walmart_cost = stores.get("walmart", {}).get("total_cost", 0)
-                target_cost = stores.get("target", {}).get("total_cost", 0)
-                best_store = price_data.get("best_store", "walmart")
-                best_cost = min(walmart_cost, target_cost)
-                remaining = budget - best_cost
-
-                # Get item details from the best store
-                best_store_data = stores.get(best_store, {})
-                items = best_store_data.get("items", [])
-
-                # Format benefit type for display
-                if benefit_type == "COMBINED":
-                    benefit_display = "WIC + SNAP"
-                else:
-                    benefit_display = benefit_type
-                
-                response_lines = [f"Based on your ${budget:.2f} {benefit_display} balance, you can buy groceries at {best_store.title()} which is cheaper and healthy:"]
-
-                if items:
-                    for item in items:
-                        name = item.get("name", "Unknown Item")
-                        price = item.get("promo_price") or item.get("regular_price", 0)
-                        response_lines.append(f"{name}: ${price:.2f}")
-                else:
-                    response_lines.append("No eligible items found - this may be due to filtering or data issues.")
-
-                response_lines.append(f"Total cost: ${best_cost:.2f}")
-                response_lines.append(f"Remaining credit: ${remaining:.2f}")
-
-                return "\n".join(response_lines)
+            
+            # Format benefit type for display
+            if benefit_type == "COMBINED":
+                benefit_display = "SNAP + WIC"
             else:
-                # Fallback when no price data is available
-                benefit_display = "WIC + SNAP" if benefit_type == "COMBINED" else benefit_type
-                return f"Based on your ${budget:.2f} {benefit_display} balance, you can buy basic groceries at Walmart which is cheaper and healthy:\nMilk: $3.18\nBread: $0.98\nEggs: $1.98\nTotal cost: $6.14\nRemaining credit: ${budget - 6.14:.2f}"
-
+                benefit_display = benefit_type if isinstance(benefit_type, str) else " + ".join(benefit_type)
+                
+            response_lines = [f"🛒 **Shopping Recommendation for ${budget:.2f} {benefit_display}**"]
+            
+            # Try to extract shopping list from Agent 1's structured data
+            shopping_list = price_data.get("shopping_list", [])
+            if shopping_list:
+                total_cost = sum(item.get("price", 0) for item in shopping_list)
+                remaining = budget - total_cost
+                
+                response_lines.append(f"\n**Shopping List ({len(shopping_list)} items):**")
+                
+                # Group items by category
+                categories = {}
+                for item in shopping_list:
+                    category = item.get("category", "Other")
+                    if category not in categories:
+                        categories[category] = []
+                    categories[category].append(item)
+                
+                for category, items in categories.items():
+                    response_lines.append(f"\n**{category}:**")
+                    for item in items[:3]:  # Show first 3 items per category
+                        name = item.get("name", "Unknown Item")
+                        price = item.get("price", 0)
+                        store = item.get("store", "")
+                        response_lines.append(f"  • {name}: ${price:.2f} at {store}")
+                    if len(items) > 3:
+                        response_lines.append(f"  • ... and {len(items)-3} more items")
+                
+                response_lines.append(f"\n**Total Cost:** ${total_cost:.2f}")
+                response_lines.append(f"**Remaining Balance:** ${remaining:.2f}")
+            else:
+                response_lines.append("\n⚠️ No shopping list available. Please specify your budget like 'I have SNAP $45 and WIC $20'")
+            
+            # Add nutrition summary if available
+            if nutrition_response:
+                response_lines.append(f"\n{nutrition_response}")
+            
+            return "\n".join(response_lines)
+            
         except Exception as e:
-            benefit_type = analysis.get('benefit_type', 'SNAP')
-            benefit_display = "WIC + SNAP" if benefit_type == "COMBINED" else benefit_type
-            return f"Based on your ${analysis.get('budget', 50):.2f} {benefit_display} balance, you can buy groceries at Walmart which is cheaper and healthy:\nMilk: $3.18\nBread: $0.98\nEggs: $1.98\nTotal cost: $6.14\nRemaining credit: ${analysis.get('budget', 50) - 6.14:.2f}"
+            logger.error(f"Error generating recommendation: {e}")
+            return f"Error generating recommendation: {str(e)}"
 
     async def _get_fallback_response(self, user_message: str, budget: float, benefit_type: str, health_conditions: List[str]) -> str:
         """Fallback method that uses individual agents directly when Google ADK fails."""
@@ -499,12 +563,18 @@ class GrocerEaseOrchestrator:
             items = self._extract_items_from_message(user_message)
             
             # Get price analysis from price agent
-            price_request = {
-                "items": items,
-                "budget": budget,
-                "benefit_type": benefit_type
-            }
-            price_response = await price_agent.handle_price_request(price_request)
+            # Create budget request message for Agent 1
+            if benefit_type == "SNAP":
+                budget_message = f"I have SNAP ${budget:.0f}"
+            elif benefit_type == "WIC":
+                budget_message = f"I have WIC ${budget:.0f}"
+            else:
+                # Split budget between SNAP and WIC if combined
+                snap_portion = budget * 0.7  # 70% SNAP
+                wic_portion = budget * 0.3   # 30% WIC
+                budget_message = f"I have SNAP ${snap_portion:.0f} and WIC ${wic_portion:.0f}"
+            
+            price_response = await price_agent(budget_message)
             
             # Get nutrition analysis from nutrition agent
             nutrition_request = {
@@ -555,6 +625,12 @@ class GrocerEaseOrchestrator:
                     response_parts.append(f"[WARNING] Moderate nutritional value")
                 else:
                     response_parts.append(f"[ERROR] Low nutritional value - consider healthier options")
+            
+            # Add full nutrition report if available
+            if nutrition_response and nutrition_response.get("nutrition_report"):
+                response_parts.append(f"\n{nutrition_response['nutrition_report']}")
+            elif nutrition_response and nutrition_response.get("response", {}).get("nutrition_report"):
+                response_parts.append(f"\n{nutrition_response['response']['nutrition_report']}")
             
             # Recommendations
             response_parts.append(f"\nRECOMMENDATIONS:")
@@ -696,12 +772,19 @@ async def price_agent_analyze(request: Dict[str, Any]):
         budget = request.get("budget", 50.0)
         benefit_type = request.get("benefit_type", "SNAP")
         
-        # Call the actual agent method
-        response = await price_agent.handle_price_request({
-            "items": items,
-            "budget": budget,
-            "benefit_type": benefit_type
-        })
+        # Create budget request message for Agent 1
+        if benefit_type == "SNAP":
+            budget_message = f"I have SNAP ${budget:.0f}"
+        elif benefit_type == "WIC":
+            budget_message = f"I have WIC ${budget:.0f}"
+        else:
+            # Split budget between SNAP and WIC if combined
+            snap_portion = budget * 0.7  # 70% SNAP
+            wic_portion = budget * 0.3   # 30% WIC
+            budget_message = f"I have SNAP ${snap_portion:.0f} and WIC ${wic_portion:.0f}"
+        
+        # Call Agent 1 directly
+        response = await price_agent(budget_message)
         
         return JSONResponse(response)
     except Exception as e:

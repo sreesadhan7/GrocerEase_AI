@@ -1,11 +1,23 @@
-# GrocerEase AI - Agent 2: Nutrition Analyst (Clean Version)
+# GrocerEase AI - Agent 2: Nutrition Analyst (Enhanced with Detailed Nutrition Data)
 
 import json
 import os
+import logging
 from typing import Dict, List, Any
 from datetime import datetime
 from dotenv import load_dotenv
 from google.adk.agents import LlmAgent
+
+# Setup logger
+logger = logging.getLogger(__name__)
+
+# Import nutrition database
+try:
+    from nutrition_data import NUTRITION_DATA, get_nutrition_info, calculate_nutrient_density
+except ImportError:
+    import sys
+    sys.path.append(os.path.dirname(__file__))
+    from nutrition_data import NUTRITION_DATA, get_nutrition_info, calculate_nutrient_density
 
 # Load environment variables
 load_dotenv()
@@ -26,63 +38,231 @@ class NutritionAgent(LlmAgent):
         super().__init__(
             name="Nutrition_Health_Analyst", 
             model=MODEL,
-            description="Agent 2: Analyzes nutrition, health compatibility, and provides substitution recommendations.",
-    instruction="""You are the GrocerEase AI Nutrition Analyst with comprehensive health and nutrition expertise.
-    I analyze grocery lists and provide detailed nutrition analysis with costs, nutrient content, and health recommendations.
+            description="Agent 2: Detailed nutrition analysis with specific nutrient values and health recommendations.",
+            instruction="""You are Agent 2 - Nutrition & Health Analyst specializing in DETAILED NUTRIENT ANALYSIS.
 
-    **🎯 MY PRIMARY ROLE: ANALYZE GROCERIES**
-    I analyze both existing grocery lists users provide AND shopping lists created by Agent 1.
+**🧬 MY FOCUS: Detailed Nutritional Analysis**
+• Analyze specific nutrients: protein, fiber, vitamins, minerals per item
+• Calculate nutrient density and nutritional value per serving  
+• Provide health-specific recommendations based on nutrient profiles
+• Compare nutritional benefits between food choices
+• Optimize nutrition within budget constraints
 
-    **I ANALYZE:**
-    🥗 **User-Provided Lists**: "Analyze my chicken, oats, lentils, bread, salmon" → Detailed nutrition analysis
-    📊 **Agent 1 Shopping Lists**: Load from JSON and provide comprehensive analysis
-    🏥 **Health Compatibility**: Diabetes, heart health, dietary restrictions
-    💡 **Substitution Advice**: Healthier alternatives within budget
-    🔢 **Cost Analysis**: Price per nutrient calculations
+**📊 WHAT I ANALYZE:**
+• Macronutrients: Protein, carbs, fiber, fat per serving
+• Vitamins: A, B-complex, C, D, E with % Daily Values
+• Minerals: Iron, calcium, potassium, magnesium, zinc with amounts
+• Health benefits and dietary considerations per food
+• Nutrient density calculations (nutrition per dollar)
 
-    **I DO NOT CREATE SHOPPING LISTS** - that's Agent 1's job. When users ask for shopping lists or budget optimization, redirect:
-    "For creating shopping lists within your budget, please consult Agent 1 - the SNAP/WIC Price Tracker. I specialize in analyzing nutrition content and providing health recommendations."
+**❌ WHAT I DON'T DO:**
+• Budget tracking or price comparisons (that's Agent 1)
+• Create shopping lists or store recommendations
+• SNAP/WIC eligibility verification
 
-    **WHAT I PROVIDE:**
-    1. **Detailed Nutrition Analysis** for each item with cost breakdown
-    2. **Health Compatibility** scoring (diabetes-friendly, heart-healthy, etc.)
-    3. **Nutrient Content** (protein, fiber, vitamins, minerals per item)
-    4. **Cost-Effectiveness** (nutrients per dollar spent)
-    5. **Substitution Recommendations** for healthier alternatives
-    6. **Overall Health Score** with detailed explanations
-
-    **Example Analysis Response:**
-    🥗 **NUTRITION ANALYSIS**
-
-    📊 **Item-by-Item Breakdown:**
-    • **Chicken Breast (5$)**: 
-      - Protein: 31g per serving (6.2g/$1) ✅ Excellent
-      - Fat: 3g (lean protein) ✅ Heart-healthy
-      - Diabetes: ✅ Perfect (0g carbs)
-      
-    • **Oats (3$)**:
-      - Fiber: 4g per serving (1.3g/$1) ✅ Good
-      - Complex carbs: Slow energy release
-      - Diabetes: ⚠️ Monitor portions (high carb)
-
-    💡 **Health Recommendations:**
-    • Excellent protein choices for muscle building
-    • Consider steel-cut oats for better blood sugar control
-    • Add more vegetables for micronutrients
-
-    **Example Requests I Handle:**
-    ✅ "Analyze my chicken, oats, lentils shopping list"
-    ✅ "Is this list good for diabetes?"
-    ✅ "What nutrients am I getting?"
-    ✅ "Suggest healthier alternatives"
-
-    **Example Requests for Agent 1:**
-    ❌ "I have $40 budget, create a shopping list"
-    ❌ "What can I buy with SNAP benefits?"
-    ❌ "Find me cheapest groceries"
-
-    I'm your nutrition analyzer, providing detailed analysis with costs and recommendations! """
+I focus EXCLUSIVELY on nutrition content, health benefits, and dietary optimization."""
         )
+
+    def analyze_grocery_nutrition(self, items: List[Dict]) -> str:
+        """
+        Analyze grocery items for detailed nutrition information
+        """
+        try:
+            # Load nutrition data
+            try:
+                from .nutrition_data import get_nutrition_info, NUTRITION_DATA
+            except ImportError:
+                # Fallback for direct execution
+                import nutrition_data
+                get_nutrition_info = nutrition_data.get_nutrition_info
+                NUTRITION_DATA = nutrition_data.NUTRITION_DATA
+            
+            analysis_results = []
+            total_nutrition = {
+                'protein': 0, 'carbs': 0, 'fat': 0, 'fiber': 0, 'calcium': 0,
+                'iron': 0, 'vitamin_c': 0, 'vitamin_d': 0, 'calories': 0
+            }
+            
+            for item in items:
+                item_name = item.get('item', '').lower()
+                price = item.get('price', 0)
+                store = item.get('store', 'Unknown')
+                
+                # Get nutrition info
+                nutrition_raw = get_nutrition_info(item_name)
+                nutrition = self._flatten_nutrition(nutrition_raw)
+                
+                # Calculate nutrient density (nutrients per dollar)
+                nutrient_density = {}
+                if price > 0:
+                    for nutrient, value in nutrition.items():
+                        if isinstance(value, (int, float)) and value > 0:
+                            nutrient_density[nutrient] = round(value / price, 2)
+                
+                # Add to totals
+                for nutrient in total_nutrition:
+                    if nutrient in nutrition:
+                        total_nutrition[nutrient] += nutrition[nutrient]
+                
+                # Create item analysis
+                item_analysis = {
+                    'item': item_name,
+                    'store': store,
+                    'price': price,
+                    'nutrition': nutrition,
+                    'nutrient_density': nutrient_density,
+                    'health_benefits': self._get_health_benefits(nutrition)
+                }
+                analysis_results.append(item_analysis)
+            
+            # Generate comprehensive report
+            report = self._generate_nutrition_report(analysis_results, total_nutrition)
+            return report
+            
+        except Exception as e:
+            return f"Error analyzing nutrition: {str(e)}"
+
+    def _flatten_nutrition(self, nutrition_raw: Dict[str, Any]) -> Dict[str, float]:
+        """
+        Convert nutrition data that may be nested under macronutrients/vitamins/minerals
+        into a flat dict with keys we report on.
+        """
+        if not nutrition_raw:
+            return {
+                'calories': 0, 'protein': 0, 'carbs': 0, 'fat': 0, 'fiber': 0,
+                'calcium': 0, 'iron': 0, 'vitamin_c': 0, 'vitamin_d': 0
+            }
+
+        flat: Dict[str, float] = {
+            'calories': float(nutrition_raw.get('calories', 0) or 0),
+            'protein': 0.0, 'carbs': 0.0, 'fat': 0.0, 'fiber': 0.0,
+            'calcium': 0.0, 'iron': 0.0, 'vitamin_c': 0.0, 'vitamin_d': 0.0
+        }
+
+        macros = nutrition_raw.get('macronutrients', {}) or {}
+        vitamins = nutrition_raw.get('vitamins', {}) or {}
+        minerals = nutrition_raw.get('minerals', {}) or {}
+
+        # Macronutrients in grams
+        flat['protein'] = float(macros.get('protein', 0) or 0)
+        flat['carbs'] = float(macros.get('carbohydrates', macros.get('carbs', 0)) or 0)
+        flat['fat'] = float(macros.get('fat', 0) or 0)
+        flat['fiber'] = float(macros.get('fiber', 0) or 0)
+
+        # Vitamins/minerals typical units
+        flat['vitamin_c'] = float(vitamins.get('vitamin_c', 0) or 0)
+        # Vitamin D may be IU; keep as-is numeric for reporting
+        flat['vitamin_d'] = float(vitamins.get('vitamin_d', 0) or 0)
+        flat['calcium'] = float(minerals.get('calcium', 0) or 0)
+        flat['iron'] = float(minerals.get('iron', 0) or 0)
+
+        return flat
+    
+    def _get_health_benefits(self, nutrition: Dict) -> List[str]:
+        """
+        Determine health benefits based on nutrition content
+        """
+        benefits = []
+        
+        if nutrition.get('protein', 0) >= 15:
+            benefits.append("High protein for muscle maintenance")
+        if nutrition.get('fiber', 0) >= 5:
+            benefits.append("High fiber for digestive health")
+        if nutrition.get('calcium', 0) >= 200:
+            benefits.append("Good source of calcium for bone health")
+        if nutrition.get('iron', 0) >= 3:
+            benefits.append("Good iron content for blood health")
+        if nutrition.get('vitamin_c', 0) >= 20:
+            benefits.append("Rich in Vitamin C for immune support")
+        
+        return benefits
+    
+    def _generate_nutrition_report(self, items: List[Dict], totals: Dict) -> str:
+        """
+        Generate comprehensive nutrition analysis report
+        """
+        report = "**DETAILED NUTRITION ANALYSIS**\n\n"
+        
+        # Individual item analysis
+        report += "**ITEM-BY-ITEM ANALYSIS:**\n\n"
+        for item in items:
+            nutrition = item['nutrition']
+            benefits = item['health_benefits']
+            
+            report += f"**{item['item'].title()}** - ${item['price']:.2f} at {item['store']}\n"
+            report += f"• Calories: {nutrition.get('calories', 0)}\n"
+            report += f"• Protein: {nutrition.get('protein', 0)}g\n"
+            report += f"• Carbs: {nutrition.get('carbs', 0)}g\n"
+            report += f"• Fat: {nutrition.get('fat', 0)}g\n"
+            report += f"• Fiber: {nutrition.get('fiber', 0)}g\n"
+            report += f"• Calcium: {nutrition.get('calcium', 0)}mg\n"
+            report += f"• Iron: {nutrition.get('iron', 0)}mg\n"
+            report += f"• Vitamin C: {nutrition.get('vitamin_c', 0)}mg\n"
+            
+            if benefits:
+                report += f"**Health Benefits:** {', '.join(benefits)}\n"
+            
+            # Nutrient density analysis
+            if item['nutrient_density']:
+                report += "**Nutrient Value per Dollar:**\n"
+                for nutrient, density in item['nutrient_density'].items():
+                    if density > 0:
+                        report += f"  - {nutrient}: {density}\n"
+            
+            report += "\n"
+        
+        # Overall nutrition summary
+        report += "**OVERALL NUTRITION SUMMARY:**\n"
+        report += f"• Total Calories: {totals['calories']}\n"
+        report += f"• Total Protein: {totals['protein']}g\n"
+        report += f"• Total Carbs: {totals['carbs']}g\n"
+        report += f"• Total Fat: {totals['fat']}g\n"
+        report += f"• Total Fiber: {totals['fiber']}g\n"
+        report += f"• Total Calcium: {totals['calcium']}mg\n"
+        report += f"• Total Iron: {totals['iron']}mg\n"
+        report += f"• Total Vitamin C: {totals['vitamin_c']}mg\n\n"
+        
+        # Health recommendations
+        report += self._generate_health_recommendations(totals)
+        
+        return report
+    
+    def _generate_health_recommendations(self, totals: Dict) -> str:
+        """
+        Generate personalized health recommendations
+        """
+        recommendations = "**HEALTH RECOMMENDATIONS:**\n\n"
+        
+        # Protein analysis
+        if totals['protein'] < 50:
+            recommendations += "• **Add more protein** - Consider lean meats, beans, or Greek yogurt\n"
+        elif totals['protein'] > 150:
+            recommendations += "• **Protein is adequate** - Good balance for muscle health\n"
+        
+        # Fiber analysis
+        if totals['fiber'] < 25:
+            recommendations += "• **Increase fiber** - Add more vegetables, fruits, and whole grains\n"
+        else:
+            recommendations += "• **Excellent fiber intake** - Great for digestive health\n"
+        
+        # Calcium analysis
+        if totals['calcium'] < 800:
+            recommendations += "• **Boost calcium** - Consider dairy products or fortified alternatives\n"
+        
+        # Iron analysis
+        if totals['iron'] < 15:
+            recommendations += "• **Iron could be higher** - Add leafy greens, legumes, or lean meats\n"
+        
+        # Vitamin C analysis
+        if totals['vitamin_c'] < 65:
+            recommendations += "• **Add Vitamin C** - Include citrus fruits, berries, or bell peppers\n"
+        
+        recommendations += "\n**DIETARY COMPATIBILITY:**\n"
+        recommendations += "• Diabetes-friendly options: Focus on high-fiber, low-sugar items\n"
+        recommendations += "• Heart-healthy choices: Emphasize items with healthy fats and fiber\n"
+        recommendations += "• Weight management: Balance protein and fiber for satiety\n"
+        
+        return recommendations
 
     def load_shopping_data(self) -> Dict[str, Any]:
         """Load shopping list from Agent 1's JSON output with enhanced validation"""
@@ -97,24 +277,128 @@ class NutritionAgent(LlmAgent):
                 if isinstance(data, dict) and 'shopping_list' in data:
                     shopping_list = data['shopping_list']
                     if isinstance(shopping_list, list) and len(shopping_list) > 0:
-                        print(f"✅ Agent 2: Loaded {len(shopping_list)} items from Agent 1 for analysis")
+                        # Use ASCII-only logs to avoid Windows console encoding errors
+                        print(f"Agent 2: Loaded {len(shopping_list)} items from Agent 1 for analysis")
                         return data
                     else:
-                        print("⚠️ Agent 2: Shopping list is empty - please run Agent 1 first")
+                        print("Agent 2: Shopping list is empty - please run Agent 1 first")
                         return {"shopping_list": [], "cost_breakdown": {"total_cost": 0}}
                 else:
-                    print("⚠️ Agent 2: Invalid data format from Agent 1")
+                    print("Agent 2: Invalid data format from Agent 1")
                     return {"shopping_list": [], "cost_breakdown": {"total_cost": 0}}
             else:
-                print(f"⚠️ Agent 2: No data from Agent 1 found. Please run Agent 1 first to generate shopping list.")
+                print("Agent 2: No data from Agent 1 found. Please run Agent 1 first to generate shopping list.")
                 return {"shopping_list": [], "cost_breakdown": {"total_cost": 0}}
                 
         except json.JSONDecodeError as e:
-            print(f"❌ Agent 2: JSON parsing error: {e}")
+            print(f"Agent 2: JSON parsing error: {e}")
             return {"shopping_list": [], "cost_breakdown": {"total_cost": 0}}
         except Exception as e:
-            print(f"❌ Agent 2: Error loading shopping data: {e}")
+            print(f"Agent 2: Error loading shopping data: {e}")
             return {"shopping_list": [], "cost_breakdown": {"total_cost": 0}}
+
+    def _map_agent1_items_to_nutrition_items(self, agent1_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Convert Agent 1 shopping_list items to the minimal shape NutritionAgent needs:
+        [{ 'item': str, 'price': float, 'store': str }]
+        """
+        mapped: List[Dict[str, Any]] = []
+        for it in agent1_items or []:
+            try:
+                mapped.append({
+                    'item': (it.get('name') or it.get('product_name') or '').lower(),
+                    'price': float(it.get('price', it.get('regular_price', 0)) or 0),
+                    'store': (it.get('store') or 'Unknown').title(),
+                })
+            except Exception:
+                # Skip malformed items gracefully
+                continue
+        return mapped
+
+    async def handle_nutrition_analysis(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Public entrypoint for A2A/HTTP usage. Consumes Agent 1 output implicitly when items are not provided.
+        Request shape:
+          {
+            'items': Optional[List[{'item'|'name', 'price'?, 'store'?}]],
+            'budget': Optional[float],
+            'health_conditions': Optional[List[str]]
+          }
+        Returns a structured dict that includes the human-readable report and a compact summary for UI use.
+        """
+        try:
+            items_in = request.get('items') or []
+            source = 'request'
+
+            # If no items provided, try to load Agent 1 output file
+            if not items_in:
+                agent1_data = self.load_shopping_data()
+                agent1_items = agent1_data.get('shopping_list', [])
+                items = self._map_agent1_items_to_nutrition_items(agent1_items)
+                cost_breakdown = agent1_data.get('cost_breakdown', {})
+                source = 'agent1_file' if items else 'none'
+            else:
+                # Map any 'name' field to 'item' for consistency
+                normalized = []
+                for it in items_in:
+                    normalized.append({
+                        'item': (it.get('item') or it.get('name') or '').lower(),
+                        'price': float(it.get('price', 0) or 0),
+                        'store': (it.get('store') or 'Unknown').title()
+                    })
+                items = normalized
+                cost_breakdown = {}
+
+            if not items:
+                return {
+                    'success': False,
+                    'message': 'No items available for nutrition analysis. Run Agent 1 first or provide items.',
+                    'source': source
+                }
+
+            report_text = self.analyze_grocery_nutrition(items)
+
+            # Build a compact summary that UI or next agent can consume programmatically
+            summary = {
+                'total_items': len(items),
+                'stores': sorted(list({i['store'] for i in items if i.get('store')})),
+                'estimated_total_cost': round(sum((i.get('price') or 0) for i in items), 2)
+            }
+
+            if isinstance(cost_breakdown, dict) and cost_breakdown:
+                summary['cost_breakdown'] = cost_breakdown
+
+            return {
+                'success': True,
+                'source': source,
+                'nutrition_report': report_text,
+                'summary': summary
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'message': f'Nutrition analysis failed: {e}'
+            }
+
+    async def handle_a2a_message(self, message_type: str, message_data: Dict[str, Any], sender_id: str) -> Dict[str, Any]:
+        """
+        Minimal A2A compatibility so the orchestrator can call this agent reliably.
+        Supports message_type 'filter_nutrition' (primary) and falls back to unified handler.
+        """
+        try:
+            if message_type in ('filter_nutrition', 'analyze_nutrition', 'analyze'):
+                response = await self.handle_nutrition_analysis(message_data or {})
+                return {'response': response}
+            # Unknown message types return a graceful error
+            return {'response': {
+                'success': False,
+                'message': f'Unsupported message_type: {message_type}'
+            }}
+        except Exception as e:
+            return {'response': {
+                'success': False,
+                'message': f'A2A handling error: {e}'
+            }}
 
     def _parse_user_items(self, message: str) -> List[Dict]:
         """Parse grocery items from user message like 'chicken 5$, oats 3$, lentils 3$'"""
@@ -302,7 +586,7 @@ For creating shopping lists within your budget, please consult Agent 1 - the SNA
             
             if shopping_list:
                 # Agent 1 data available - analyze it
-                return self.analyze_shopping_list(shopping_list, shopping_data, message_lower)
+                return await self.analyze_shopping_list(shopping_list, shopping_data, message_lower)
             else:
                 # No Agent 1 data - check if user provided items in current or previous messages
                 user_items = self._parse_user_items_from_context(message)
@@ -336,9 +620,9 @@ I need a shopping list from Agent 1 to analyze. Please:
 **Example:** "I have $50 SNAP budget, please create a shopping list" (ask Agent 1 first)"""
 
         # Analyze the shopping list based on user request
-        return self.analyze_shopping_list(shopping_list, shopping_data, message_lower)
+        return await self.analyze_shopping_list(shopping_list, shopping_data, message_lower)
 
-    def analyze_shopping_list(self, items: List[Dict], shopping_data: Dict, user_message: str) -> str:
+    async def analyze_shopping_list(self, items: List[Dict], shopping_data: Dict, user_message: str) -> str:
         """Analyze shopping list with condition-specific focus"""
         total_cost = shopping_data.get('cost_breakdown', {}).get('total_cost', 0)
         if total_cost == 0:
@@ -380,7 +664,10 @@ I need a shopping list from Agent 1 to analyze. Please:
         elif is_heart:
             response += self._heart_health_advice(categories)
         elif is_substitution:
-            response += self._substitution_advice(items)
+            # Enhanced substitution analysis
+            response += f"\n\n🔄 **COMPREHENSIVE SUBSTITUTION ANALYSIS:**\n"
+            response += "*(Powered by GrocerEase AI Substitution Specialist)*\n"
+            response += self._enhanced_substitution_advice(items)
         else:
             response += self._general_health_advice(categories)
 
@@ -589,6 +876,174 @@ I need a shopping list from Agent 1 to analyze. Please:
 
         return response
 
+    def _enhanced_substitution_advice(self, items: List[Dict]) -> str:
+        """Enhanced detailed substitution analysis powered by GrocerEase AI"""
+        # Categorize items by type for targeted recommendations
+        protein_items = []
+        carb_items = []
+        fat_items = []
+        produce_items = []
+        processed_items = []
+        
+        for item in items:
+            name = item.get('name', '').lower()
+            category = item.get('category', '').lower()
+            
+            if 'meat' in category or 'chicken' in name or 'beef' in name or 'turkey' in name or 'egg' in name:
+                protein_items.append(item)
+            elif 'produce' in category or 'banana' in name:
+                produce_items.append(item)
+            elif 'peanut butter' in name or 'protein powder' in name:
+                fat_items.append(item)
+            elif 'beans' in name or 'bread' in name:
+                carb_items.append(item)
+            elif 'value' in name or 'processed' in name:
+                processed_items.append(item)
+        
+        response = ""
+        
+        # PROTEIN SUBSTITUTIONS
+        if protein_items:
+            response += """
+**🥩 PROTEIN OPTIMIZATION ANALYSIS:**
+
+**Current Protein Sources Analysis:**"""
+            for item in protein_items[:3]:
+                name = item.get('name', '')
+                price = item.get('price', 0)
+                response += f"\n• {name} - ${price:.2f}"
+                
+                if 'ground beef' in name.lower():
+                    response += " → **UPGRADE:** Ground turkey (15% less saturated fat, same protein)"
+                elif 'chicken breast' in name.lower():
+                    response += " → **COST SAVER:** Chicken thighs (30% less cost, more flavor)"
+                elif 'egg' in name.lower():
+                    response += " → **PREMIUM:** Pasture-raised eggs (+25% omega-3s)"
+            
+            response += """
+
+**🔄 TOP PROTEIN SUBSTITUTIONS:**
+1. **Lentils for Ground Meat:** $0.75/cup vs $6.00/lb - 18g protein, 16g fiber
+2. **Greek Yogurt for Protein Powder:** Natural probiotics + 20g protein per cup
+3. **Quinoa for Rice:** Complete amino acid profile + 8g protein per cup
+4. **Hemp Seeds:** Sprinkle on meals for omega-3s + plant protein boost"""
+
+        # CARBOHYDRATE SUBSTITUTIONS
+        if carb_items:
+            response += """
+
+**🌾 CARBOHYDRATE & FIBER ENHANCEMENT:**
+
+**Smart Carb Swaps for Better Nutrition:**"""
+            for item in carb_items[:2]:
+                name = item.get('name', '')
+                if 'beans' in name.lower():
+                    response += f"\n✅ **{name}** - Excellent choice! 15g protein + 15g fiber per cup"
+                elif 'bread' in name.lower():
+                    response += f"\n🔄 **{name}** → Sprouted grain bread (higher protein + easier digestion)"
+                    
+            response += """
+**FIBER POWERHOUSE ADDITIONS:**
+• **Chia Seeds:** 10g fiber per oz - add to smoothies/yogurt
+• **Sweet Potatoes:** Replace regular potatoes (more vitamins + fiber)
+• **Steel-Cut Oats:** 4g fiber + sustained energy vs instant varieties"""
+
+        # FAT SOURCE OPTIMIZATION
+        if fat_items:
+            response += """
+
+**🥜 HEALTHY FATS ANALYSIS:**
+
+**Current Fat Sources:**"""
+            for item in fat_items[:2]:
+                name = item.get('name', '')
+                price = item.get('price', 0)
+                response += f"\n• {name} - ${price:.2f}"
+                
+                if 'creamy peanut butter' in name.lower():
+                    response += " → **UPGRADE:** Natural peanut butter (no added sugar/oils)"
+                elif 'protein powder' in name.lower():
+                    response += " → **WHOLE FOOD:** Greek yogurt + berries (natural nutrients)"
+                    
+            response += """
+
+**PREMIUM FAT SUBSTITUTIONS:**
+1. **Avocados:** Monounsaturated fats + fiber + potassium
+2. **Wild-Caught Salmon:** Omega-3s EPA/DHA for brain health  
+3. **Walnuts:** Plant-based omega-3s + magnesium for sleep
+4. **Extra Virgin Olive Oil:** Antioxidants + heart-protective compounds"""
+
+        # PRODUCE ENHANCEMENT
+        response += """
+
+**🥬 PRODUCE POWER-UP RECOMMENDATIONS:**
+
+**Color Spectrum Nutrition Strategy:**
+• **Red:** Tomatoes, bell peppers (lycopene for heart health)
+• **Orange:** Carrots, sweet potatoes (beta-carotene for immunity)  
+• **Green:** Spinach, broccoli (folate + iron for energy)
+• **Purple:** Blueberries, purple cabbage (anthocyanins for brain health)
+
+**Budget-Friendly Produce Hacks:**
+1. **Frozen Vegetables:** Same nutrition, 50% cost savings, longer storage
+2. **Seasonal Shopping:** In-season produce = peak nutrition + lowest prices
+3. **Grow Your Own:** Herbs, lettuce, sprouts - $2 investment = $20+ value
+4. **Buy Whole:** Whole chickens, whole vegetables = significant savings"""
+
+        # MEAL TIMING & PREPARATION
+        response += """
+
+**⏰ ADVANCED SUBSTITUTION STRATEGIES:**
+
+**Nutrient Timing Optimization:**
+• **Pre-Workout:** Quick carbs (banana) + caffeine (green tea)
+• **Post-Workout:** Protein + carbs within 30 min (eggs + toast)
+• **Evening:** Magnesium-rich foods (spinach, nuts) for better sleep
+• **Morning:** High-protein start (Greek yogurt + berries) for satiety
+
+**MEAL PREP SUBSTITUTION WINS:**
+1. **Batch Cook Proteins:** Prepare 3 days worth - saves time + money
+2. **Mason Jar Salads:** Pre-made nutrition for grab-and-go convenience  
+3. **Smoothie Packs:** Pre-portioned frozen ingredients for quick meals
+4. **Energy Balls:** Dates + nuts + seeds = healthy processed food substitute
+
+**🎯 HEALTH CONDITION SPECIFIC SWAPS:**
+
+**For Blood Sugar Management:**
+• White rice → Cauliflower rice (90% fewer carbs)
+• Regular pasta → Zucchini noodles or lentil pasta
+• Sugary snacks → Apple slices with almond butter
+
+**For Heart Health:**  
+• Butter → Avocado spread or olive oil
+• Processed meats → Wild-caught fish 2x/week
+• High-sodium items → Herbs and spices for flavor
+
+**For Inflammation Reduction:**
+• Refined oils → Cold-pressed olive oil, coconut oil
+• Sugar → Raw honey, pure maple syrup (small amounts)
+• Processed foods → Whole food alternatives
+
+**💰 COST-BENEFIT SUBSTITUTION ANALYSIS:**
+
+**HIGH-IMPACT, LOW-COST SWAPS:**
+1. **Dried Beans vs Canned:** 75% cost savings + less sodium
+2. **Whole Chicken vs Parts:** 40% savings + versatility  
+3. **Seasonal Produce:** 60% savings + peak nutrition
+4. **Bulk Spices:** 90% savings vs pre-packaged
+
+**WORTH THE INVESTMENT UPGRADES:**
+1. **Grass-Fed Meat:** +50% omega-3s, worth 20% price premium
+2. **Organic Berries:** High pesticide crop, worth organic premium
+3. **Wild-Caught Fish:** Superior omega-3 profile vs farmed
+4. **Pasture-Raised Eggs:** 2x vitamin E + omega-3s
+
+**Disclaimer: I am GrocerEase AI and cannot provide medical advice. If your symptoms worsen or you have concerns, consult a healthcare professional.**
+
+**✅ SUBSTITUTION MASTERY SUMMARY:** These strategic swaps maximize nutrition density while respecting your budget constraints. Small changes compound into significant health improvements over time."""
+
+        return response
+
     def _general_health_advice(self, categories: Dict) -> str:
         """Provide comprehensive general health advice with actionable lifestyle recommendations"""
         return f"""\n\n💡 **COMPREHENSIVE NUTRITION & LIFESTYLE ASSESSMENT:**
@@ -655,7 +1110,9 @@ nutrition_analyzer_agent = LlmAgent(
     - Protein per dollar value
     - Overall nutrition score (0-100)
     
-    Return structured data with scores and recommendations.""",
+    Return structured data with scores and recommendations.
+    
+    Always identify yourself as 'GrocerEase AI' not 'AI assistant'. Include appropriate disclaimers about medical advice.""",
     disallow_transfer_to_peers=True,
 )
 
@@ -674,7 +1131,11 @@ substitution_agent = LlmAgent(
     - High sugar items → Low sugar alternatives for diabetics
     - High sodium items → Low sodium alternatives for hypertension
     
-    Provide clear reasoning for each substitution.""",
+    Provide clear reasoning for each substitution.
+    
+    Always end responses with: 'Disclaimer: I am GrocerEase AI and cannot provide medical advice. If your symptoms worsen or you have concerns, consult a healthcare professional.'
+    
+    Never say 'AI assistant' - always say 'GrocerEase AI'.""",
     disallow_transfer_to_peers=True,
 )
 
